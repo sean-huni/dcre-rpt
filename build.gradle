@@ -21,3 +21,25 @@ dependencies {
     testImplementation 'org.testcontainers:cockroachdb:1.21.4'
 }
 test { useJUnitPlatform() }
+
+// Spec 2026-07-15 client-stats section 6 guard 1: every client-facing view carries the
+// session-identity predicate. Ops changelog views use current_user too, so the scan is uniform.
+tasks.register('verifyViewPredicates') {
+    group = 'verification'
+    doLast {
+        def offenders = []
+        fileTree('src/main/resources/db/changelog').matching { include '**/*.xml' }.each { f ->
+            def text = f.text
+            def matcher = text =~ /(?s)<createView[^>]*viewName="([^"]+)"[^>]*>(.*?)<\/createView>/
+            matcher.each { full, viewName, body ->
+                if (!body.contains('current_user')) {
+                    offenders << "${f.name}: ${viewName}"
+                }
+            }
+        }
+        if (!offenders.isEmpty()) {
+            throw new GradleException("Views missing session-identity predicate: ${offenders}")
+        }
+    }
+}
+check.dependsOn 'verifyViewPredicates'
