@@ -105,6 +105,19 @@ class RptOpsViewsIT {
         }
     }
 
+    /** Secondary-history invariant, mirroring the primary 14-count in {@link RptJobTest}. */
+    @Test
+    void opsLiquibaseHistoryHoldsExactlyFourChangesets() throws Exception {
+        try (Connection root = DriverManager.getConnection(
+                RptJobTest.opsDbUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword());
+             Statement s = root.createStatement()) {
+            ResultSet rs = s.executeQuery("SELECT count(*) FROM rpt_databasechangelog");
+            assertTrue(rs.next());
+            assertEquals(4, rs.getInt(1),
+                    "rpt schema + two ops views + grants applied via rpt-prefixed history in agt_ops");
+        }
+    }
+
     @Test
     void clientRoleDeniedOnOpsViews() throws Exception {
         // Ops views have NO client-role grants (wall 1); the current_user predicate is
