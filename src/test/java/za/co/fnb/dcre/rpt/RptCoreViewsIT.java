@@ -35,7 +35,8 @@ class RptCoreViewsIT extends OltpPreseededTestBase {
         try (Connection c = RptSecurityIT.forRole("fnbcc01"); Statement s = c.createStatement()) {
             ResultSet rs = s.executeQuery("""
                 SELECT tx_count, total_amount, settled_count, settled_amount,
-                       rejected_late_count, rejected_early_count, p50_amount, p95_amount
+                       rejected_late_count, rejected_late_amount,
+                       rejected_early_count, rejected_early_amount, p50_amount, p95_amount
                 FROM rpt.v_tx_daily WHERE process_date = '2026-07-01'""");
             assertTrue(rs.next());
             assertEquals(4, rs.getInt("tx_count"));
@@ -43,7 +44,9 @@ class RptCoreViewsIT extends OltpPreseededTestBase {
             assertEquals(2, rs.getInt("settled_count"));
             assertEquals(new BigDecimal("300.00"), rs.getBigDecimal("settled_amount").setScale(2));
             assertEquals(1, rs.getInt("rejected_late_count"));
+            assertEquals(0, new BigDecimal("300.00").compareTo(rs.getBigDecimal("rejected_late_amount")));
             assertEquals(1, rs.getInt("rejected_early_count"));
+            assertEquals(0, new BigDecimal("50.00").compareTo(rs.getBigDecimal("rejected_early_amount")));
             assertEquals(0, new BigDecimal("150.00").compareTo(rs.getBigDecimal("p50_amount")));
             assertEquals(0, new BigDecimal("285.00").compareTo(rs.getBigDecimal("p95_amount")));
             assertFalse(rs.next(), "exactly one row for own client + date");

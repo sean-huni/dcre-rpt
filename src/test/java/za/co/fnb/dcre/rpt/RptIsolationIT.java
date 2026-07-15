@@ -39,7 +39,7 @@ class RptIsolationIT extends OltpPreseededTestBase {
             try (Connection c = RptSecurityIT.forRole(role); Statement s = c.createStatement()) {
                 for (String v : views) {
                     ResultSet rs = s.executeQuery(
-                            "SELECT count(*) FROM rpt." + v + " WHERE client <> '" + own + "'");
+                            "SELECT count(*) FROM rpt." + v + " WHERE client IS DISTINCT FROM '" + own + "'");
                     rs.next();
                     assertEquals(0, rs.getInt(1),
                             "view rpt." + v + " leaked foreign-client rows to " + role);
