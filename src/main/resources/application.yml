@@ -1,0 +1,24 @@
+# 12FactorApp: committed working dev defaults; env overrides. (yml-only rule)
+spring:
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: ${DCRE_DB_URL:jdbc:postgresql://localhost:26257/dcre_collections?sslmode=disable}
+    username: ${DCRE_DB_USER:root}
+    password: ${DCRE_DB_PASSWORD:}
+  batch:
+    jdbc:
+      table-prefix: RPT_BATCH_
+      initialize-schema: never
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.xml
+    # Shared DB, per-service migration history
+    database-change-log-table: rpt_databasechangelog
+    database-change-log-lock-table: rpt_databasechangeloglock
+
+dcre:
+  exchange-root: ${DCRE_EXCHANGE_ROOT:../../../../../infra/dcre-infra/exchange}
+  rpt:
+    # agt_ops ops-views changelog target (secondary Liquibase, Task 6)
+    ops-db-url: ${DCRE_RPT_OPS_DB_URL:jdbc:postgresql://localhost:26257/agt_ops?sslmode=disable}
