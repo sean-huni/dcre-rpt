@@ -15,6 +15,15 @@ import java.sql.SQLException;
  * {@code jdbc:postgresql://host:port/postgres}). Without an explicit {@code user=} parameter
  * the pgjdbc driver falls back to the OS username, so the role is forced onto the URL here:
  * an existing {@code user=} parameter is rewritten, otherwise one is appended.
+ *
+ * <p><b>Follower-read caveat:</b> the client-facing roles carry
+ * {@code default_transaction_use_follower_reads = 'on'} as a ROLE DEFAULT (changeset 001), so a
+ * connection returned here serves reads ~4.8s STALE by design. Tests that seed fixtures and read
+ * them back immediately MUST pin the session to present time first
+ * ({@code SET default_transaction_use_follower_reads = off}), as {@code RptSecurityIT.forRole}
+ * does after asserting the role default is {@code 'on'}. Skipping the pin makes fresh-fixture
+ * reads flake; on a fresh container the historical timestamp can even predate the container's
+ * own bootstrap DDL.
  */
 final class RoleConnections {
 

@@ -9,8 +9,10 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -38,6 +40,17 @@ class RptSecurityIT {
             s.execute("SET default_transaction_use_follower_reads = off");
         }
         return c;
+    }
+
+    @Test
+    void followerReadRoleDefaultAppliedToAllFourRoles() throws Exception {
+        // forRole itself asserts SHOW default_transaction_use_follower_reads = 'on' before
+        // pinning the session off; looping it covers every role from changeset 001.
+        for (String role : List.of("fnbcc01", "fnbcc02", "fnbrf01", "rpt_internal")) {
+            try (Connection c = forRole(role)) {
+                assertFalse(c.isClosed(), "connection usable for role " + role);
+            }
+        }
     }
 
     @Test
