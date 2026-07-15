@@ -73,6 +73,27 @@ public final class FixtureSeeder {
               UNIQUE (emission_id, sequence))""");
     }
 
+    /** agt_ops operational shapes (Task 6 brief), applied to the agt_ops database. */
+    public static void createOpsTables(JdbcTemplate jdbc) {
+        jdbc.execute("""
+            CREATE TABLE IF NOT EXISTS public.file_arrival (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              route_id VARCHAR(64) NOT NULL DEFAULT 'onhost-req',
+              client_token VARCHAR(64), status VARCHAR(32) NOT NULL DEFAULT 'ROUTED',
+              arrived_at TIMESTAMPTZ NOT NULL DEFAULT now())""");
+        jdbc.execute("""
+            CREATE TABLE IF NOT EXISTS public.launch_intent (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              arrival_id UUID, stage VARCHAR(16) NOT NULL,
+              status VARCHAR(16) NOT NULL DEFAULT 'LAUNCHED',
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now())""");
+        jdbc.execute("""
+            CREATE TABLE IF NOT EXISTS public.stage_outcome (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              intent_id UUID NOT NULL, outcome VARCHAR(32) NOT NULL,
+              observed_at TIMESTAMPTZ NOT NULL DEFAULT now(), attempt INT8 NOT NULL DEFAULT 0)""");
+    }
+
     public static void seed(JdbcTemplate jdbc) {
         jdbc.execute("DELETE FROM public.crw_emission_member; DELETE FROM public.crw_emission;"
                 + "DELETE FROM public.pbsr_resp; DELETE FROM public.validation_log;"

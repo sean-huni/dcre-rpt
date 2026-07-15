@@ -23,7 +23,7 @@ class RptIsolationIT extends OltpPreseededTestBase {
         registry.add("spring.datasource.url", RptJobTest.CRDB::getJdbcUrl);
         registry.add("spring.datasource.username", RptJobTest.CRDB::getUsername);
         registry.add("spring.datasource.password", RptJobTest.CRDB::getPassword);
-        registry.add("dcre.rpt.ops-db-url", RptJobTest.CRDB::getJdbcUrl);
+        registry.add("dcre.rpt.ops-db-url", RptJobTest::opsDbUrl);
     }
 
     @Autowired JdbcTemplate jdbc;

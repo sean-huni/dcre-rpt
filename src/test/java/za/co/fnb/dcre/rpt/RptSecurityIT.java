@@ -24,12 +24,17 @@ class RptSecurityIT {
         registry.add("spring.datasource.url", RptJobTest.CRDB::getJdbcUrl);
         registry.add("spring.datasource.username", RptJobTest.CRDB::getUsername);
         registry.add("spring.datasource.password", RptJobTest.CRDB::getPassword);
-        registry.add("dcre.rpt.ops-db-url", RptJobTest.CRDB::getJdbcUrl);
+        registry.add("dcre.rpt.ops-db-url", RptJobTest::opsDbUrl);
     }
 
     static Connection forRole(final String role) throws SQLException {
+        return forRole(RptJobTest.CRDB.getDatabaseName(), role);
+    }
+
+    /** Role connection to any database in the shared container, pinned to present-time reads. */
+    static Connection forRole(final String dbName, final String role) throws SQLException {
         // insecure dev container: passwordless role login
-        Connection c = RoleConnections.forRole(RptJobTest.CRDB, RptJobTest.CRDB.getDatabaseName(), role);
+        Connection c = RoleConnections.forRole(RptJobTest.CRDB, dbName, role);
         try (Statement s = c.createStatement()) {
             var rs = s.executeQuery("SHOW default_transaction_use_follower_reads");
             assertTrue(rs.next());

@@ -30,16 +30,28 @@ final class RoleConnections {
     private RoleConnections() {
     }
 
-    static Connection forRole(final CockroachContainer crdb, final String dbName, final String role)
-            throws SQLException {
+    /**
+     * Rewrites the container JDBC URL to target another database in the same cluster,
+     * preserving any query parameters (single source of the URL-rewrite logic; also used
+     * for the {@code dcre.rpt.ops-db-url} property pointing at {@code agt_ops}).
+     */
+    static String forDatabase(final CockroachContainer crdb, final String dbName) {
         final String jdbcUrl = crdb.getJdbcUrl();
         final int queryStart = jdbcUrl.indexOf('?');
         final String base = queryStart < 0 ? jdbcUrl : jdbcUrl.substring(0, queryStart);
-        final String params = queryStart < 0 ? "" : jdbcUrl.substring(queryStart + 1);
-        final String hostPort = base.substring(0, base.lastIndexOf('/'));
+        final String query = queryStart < 0 ? "" : jdbcUrl.substring(queryStart);
+        return "%s/%s%s".formatted(base.substring(0, base.lastIndexOf('/')), dbName, query);
+    }
+
+    static Connection forRole(final CockroachContainer crdb, final String dbName, final String role)
+            throws SQLException {
+        final String dbUrl = forDatabase(crdb, dbName);
+        final int queryStart = dbUrl.indexOf('?');
+        final String base = queryStart < 0 ? dbUrl : dbUrl.substring(0, queryStart);
+        final String params = queryStart < 0 ? "" : dbUrl.substring(queryStart + 1);
         final String withRole = params.contains("user=")
                 ? params.replaceAll("user=[^&]+", "user=" + role)
                 : params.isEmpty() ? "user=" + role : "%s&user=%s".formatted(params, role);
-        return DriverManager.getConnection("%s/%s?%s".formatted(hostPort, dbName, withRole));
+        return DriverManager.getConnection("%s?%s".formatted(base, withRole));
     }
 }

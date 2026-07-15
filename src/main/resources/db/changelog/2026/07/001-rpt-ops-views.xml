@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- LIQUIBASE-SQL-EXCEPTION: schema/role/grant DDL has no typed tags; idempotent. -->
+    <changeSet id="001-rpt-ops-schema-rpt" author="dcre">
+        <sql>
+            CREATE SCHEMA IF NOT EXISTS rpt;
+            CREATE ROLE IF NOT EXISTS rpt_internal LOGIN;
+            GRANT USAGE ON SCHEMA rpt TO rpt_internal;
+        </sql>
+    </changeSet>
+
+    <changeSet id="001-v-ops-stage-health-rpt" author="dcre">
+        <createView schemaName="rpt" viewName="v_ops_stage_health" replaceIfExists="true">
+            SELECT li.stage, so.observed_at::DATE AS process_date,
+                   count(*) FILTER (WHERE so.outcome LIKE 'BUSINESS%') AS business_count,
+                   count(*) FILTER (WHERE so.outcome = 'TECH_FAILED') AS tech_failed_count,
+                   count(*) AS total
+            FROM public.stage_outcome so
+            JOIN public.launch_intent li ON li.id = so.intent_id
+            WHERE current_user IN ('rpt_internal', 'root')
+            GROUP BY li.stage, so.observed_at::DATE
+        </createView>
+    </changeSet>
+
+    <changeSet id="001-v-ops-sla-rpt" author="dcre">
+        <createView schemaName="rpt" viewName="v_ops_sla" replaceIfExists="true">
+            SELECT li.stage, fa.client_token AS client, fa.arrived_at, so.observed_at,
+                   so.observed_at - fa.arrived_at AS arrival_to_outcome
+            FROM public.file_arrival fa
+            JOIN public.launch_intent li ON li.arrival_id = fa.id
+            JOIN public.stage_outcome so ON so.intent_id = li.id
+            WHERE current_user IN ('rpt_internal', 'root')
+        </createView>
+    </changeSet>
+
+    <!-- LIQUIBASE-SQL-EXCEPTION: GRANT has no typed tag; idempotent. -->
+    <changeSet id="001-ops-grants-rpt" author="dcre">
+        <sql>
+            GRANT SELECT ON ALL TABLES IN SCHEMA rpt TO rpt_internal;
+        </sql>
+    </changeSet>
+
+</databaseChangeLog>
