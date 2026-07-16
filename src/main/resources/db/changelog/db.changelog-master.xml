@@ -9,5 +9,6 @@
     <include file="db/changelog/2026/07/002-batch-metadata.xml"/>
     <include file="db/changelog/2026/07/003-rpt-core-views.xml"/>
     <include file="db/changelog/2026/07/004-rpt-extended-views.xml"/>
+    <include file="db/changelog/2026/07/005-rpt-run.xml"/>
 
 </databaseChangeLog>
