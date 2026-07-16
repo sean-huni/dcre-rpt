@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- SCRUM-58 file-trace ops views (spec 1.9), agt_ops database. BOOTSTRAP-ORDER GUARD:
+         v_ops_file_index/v_ops_flow read duplicate_delivery which agt introduces in this same
+         program (2026/07/006-duplicate-delivery.xml), so it is MARK_RAN pre-created here with
+         agt's EXACT column set, types, FK/constraint and index names. On a rpt-runs-first fresh
+         cluster this creates it; where agt ran first the guard MARK_RANs. file_arrival,
+         launch_intent and stage_outcome pre-date this program (assumed present, as on the fleet). -->
+
+    <!-- duplicate_delivery (byte-match agt 2026/07/006-duplicate-delivery.xml). -->
+    <changeSet id="002-precreate-duplicate-delivery-rpt" author="dcre">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="duplicate_delivery"/></not>
+        </preConditions>
+        <createTable tableName="duplicate_delivery">
+            <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="claim_id" type="UUID">
+                <constraints nullable="false"/>
+            </column>
+            <column name="original_arrival_id" type="UUID">
+                <constraints nullable="false"
+                             foreignKeyName="fk_dup_original_arrival"
+                             references="file_arrival(id)"/>
+            </column>
+            <column name="route_id" type="VARCHAR(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="client_token" type="VARCHAR(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="physical_filename" type="VARCHAR(512)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="payload_sha256" type="VARCHAR(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="sunk_path" type="VARCHAR(1024)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="observed_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <addUniqueConstraint tableName="duplicate_delivery"
+                             columnNames="claim_id"
+                             constraintName="uq_duplicate_delivery_claim"/>
+        <createIndex indexName="ix_dup_filename" tableName="duplicate_delivery">
+            <column name="physical_filename"/>
+        </createIndex>
+        <createIndex indexName="ix_dup_original" tableName="duplicate_delivery">
+            <column name="original_arrival_id"/>
+        </createIndex>
+    </changeSet>
+
+    <!-- v_ops_file_index: inbound copybooks / fint replies / quarantines from file_arrival,
+         duplicate re-deliveries from duplicate_delivery (related_arrival_id -> the original),
+         and the AGT-launched outcome-seam names from launch_intent.job_name. -->
+    <changeSet id="002-v-ops-file-index-rpt" author="dcre" runOnChange="true">
+        <createView schemaName="rpt" viewName="v_ops_file_index" replaceIfExists="true">
+            SELECT * FROM (
+              SELECT fa.physical_filename::STRING AS file_name, fa.client_token::STRING AS client, 'INBOUND' AS direction,
+                     (CASE WHEN fa.status = 'QUARANTINED' THEN 'QUARANTINE'
+                          WHEN fa.route_id = 'fint-resp' THEN 'FINT_REPLY'
+                          ELSE 'COPYBOOK' END)::STRING AS kind,
+                     fa.route_id::STRING AS route, fa.id AS arrival_id, NULL::UUID AS related_arrival_id,
+                     NULL::VARCHAR(63) AS job_name, fa.arrived_at AS occurred_at,
+                     COALESCE(fa.quarantine_reason, fa.status)::STRING AS state, 'file_arrival' AS source_table
+                FROM public.file_arrival fa
+              UNION ALL
+              SELECT dd.physical_filename::STRING, dd.client_token::STRING, 'INBOUND', 'DUPLICATE', dd.route_id::STRING,
+                     dd.original_arrival_id, dd.original_arrival_id, NULL::VARCHAR(63), dd.observed_at,
+                     'DUPLICATE_REDELIVERY'::STRING, 'duplicate_delivery'
+                FROM public.duplicate_delivery dd
+              UNION ALL
+              SELECT li.job_name::STRING, fa.client_token::STRING, 'INTERNAL', 'OUTCOME_SEAM', 'outcomes',
+                     li.arrival_id, NULL::UUID, li.job_name, li.created_at, li.status::STRING, 'launch_intent'
+                FROM public.launch_intent li LEFT JOIN public.file_arrival fa ON fa.id = li.arrival_id
+            ) x WHERE current_user IN ('rpt_internal', 'root')
+        </createView>
+    </changeSet>
+
+    <!-- v_ops_flow: the ops-side ordered timeline (the killer query's ops arm reads this so
+         Grafana can chart stage latencies without inline SQL). Launch/outcome projections fold
+         in here. time_kind is honest: launch_intent rows are CREATED_AT, stage_outcome rows are
+         OBSERVED_AT (observation time, NEVER job-completion time). exit_code resolved to
+         stage_outcome.exit_code (agt 001), attempt to the per-attempt bookkeeping (agt 005). -->
+    <changeSet id="002-v-ops-flow-rpt" author="dcre" runOnChange="true">
+        <createView schemaName="rpt" viewName="v_ops_flow" replaceIfExists="true">
+            SELECT * FROM (
+              SELECT fa.id AS arrival_id, NULL::VARCHAR(63) AS job_name,
+                     (CASE WHEN fa.status = 'QUARANTINED' THEN 'QUARANTINED' ELSE 'ARRIVED' END)::STRING AS step,
+                     fa.arrived_at AS step_at,
+                     (fa.physical_filename || COALESCE('|' || fa.quarantine_reason, ''))::STRING AS detail,
+                     fa.id AS source_key, 'ARRIVAL' AS event_kind, 'ARRIVED_AT' AS time_kind,
+                     NULL::UUID AS intent_id, NULL::INT AS attempt, NULL::INT AS exit_code
+                FROM public.file_arrival fa
+              UNION ALL
+              SELECT dd.original_arrival_id, NULL::VARCHAR(63), 'DUPLICATE_REDELIVERY', dd.observed_at,
+                     (dd.physical_filename || ' -> ' || dd.sunk_path)::STRING,
+                     dd.id, 'DUPLICATE', 'OBSERVED_AT', NULL::UUID, NULL::INT, NULL::INT
+                FROM public.duplicate_delivery dd
+              UNION ALL
+              SELECT li.arrival_id, li.job_name, (upper(li.stage) || '_INTENDED')::STRING, li.created_at, li.job_name::STRING,
+                     li.id, 'LAUNCH', 'CREATED_AT', li.id, li.attempt, NULL::INT
+                FROM public.launch_intent li
+              UNION ALL
+              SELECT li.arrival_id, li.job_name, (upper(li.stage) || '_' || so.outcome)::STRING, so.observed_at,
+                     ('exit=' || COALESCE(so.exit_code::STRING, '?'))::STRING,
+                     so.id, 'OUTCOME', 'OBSERVED_AT', li.id, so.attempt, so.exit_code
+                FROM public.launch_intent li JOIN public.stage_outcome so ON so.intent_id = li.id
+            ) x WHERE current_user IN ('rpt_internal', 'root')
+        </createView>
+    </changeSet>
+
+    <!-- LIQUIBASE-SQL-EXCEPTION: GRANT has no typed tag; idempotent. Ops trace views are
+         internal-only (no client-role grant on agt_ops); the current_user predicate is
+         defense-in-depth on top of the grants wall. -->
+    <changeSet id="002-ops-file-view-grants-rpt" author="dcre">
+        <sql>
+            GRANT SELECT ON rpt.v_ops_file_index, rpt.v_ops_flow TO rpt_internal;
+        </sql>
+    </changeSet>
+
+</databaseChangeLog>

@@ -39,29 +39,46 @@ public final class FixtureSeeder {
               detail VARCHAR(256),
               created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
               UNIQUE (arrival_id, sequence))""");
+        // response_file is VARCHAR(512) here to mirror the ixr/sxr/pxr 128->512 widening
+        // (SCRUM-58 Tasks 7-9): the file-trace width-conformance IT asserts >= 512 on every
+        // externally-received name column the views surface. emission_id is the crw_emission FK
+        // added by prg 003-reporting / {ixr,sxr,pxr} 003-emission-fk that the reply view arms join on.
         jdbc.execute("""
             CREATE TABLE IF NOT EXISTS public.pbsr_resp (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-              response_file VARCHAR(128) NOT NULL,
+              response_file VARCHAR(512) NOT NULL,
               orgnl_msg_id VARCHAR(35) NOT NULL DEFAULT 'M',
               e2e VARCHAR(35) NOT NULL,
               status VARCHAR(8) NOT NULL,
               reason VARCHAR(8),
+              emission_id UUID,
               created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
               UNIQUE (response_file, e2e))""");
         jdbc.execute("""
             CREATE TABLE IF NOT EXISTS public.sbsr_resp (LIKE public.pbsr_resp INCLUDING ALL)""");
         jdbc.execute("""
             CREATE TABLE IF NOT EXISTS public.isr_resp (LIKE public.pbsr_resp INCLUDING ALL)""");
+        // crw_emission batch-grain shape (crw 003-split): group_id links to crw_emission_group,
+        // visible_at drives the VISIBLE state derivation in the PAIN008 arm. file_name stays
+        // VARCHAR(128) (owner reality: internally generated, never externally received).
         jdbc.execute("""
             CREATE TABLE IF NOT EXISTS public.crw_emission (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
               arrival_id UUID NOT NULL,
               run_date DATE NOT NULL,
               file_name VARCHAR(128) NOT NULL,
-              state VARCHAR(16) NOT NULL DEFAULT 'EMITTED',
+              state VARCHAR(32) NOT NULL DEFAULT 'EMITTED',
+              group_id UUID,
+              visible_at TIMESTAMPTZ,
               created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
               UNIQUE (arrival_id, run_date))""");
+        jdbc.execute("""
+            CREATE TABLE IF NOT EXISTS public.crw_emission_group (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              arrival_id UUID NOT NULL,
+              client VARCHAR(16) NOT NULL,
+              source_msg_id VARCHAR(35) NOT NULL,
+              run_date DATE NOT NULL)""");
         jdbc.execute("""
             CREATE TABLE IF NOT EXISTS public.crw_emission_member (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -71,26 +88,50 @@ public final class FixtureSeeder {
               amount DECIMAL(18,2) NOT NULL,
               created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
               UNIQUE (emission_id, sequence))""");
+        // prg_report base (prg 003-reporting) WITHOUT job_name: the file-trace changelog's
+        // MARK_RAN addColumn pre-create (byte-matching prg 004) adds job_name at migration time,
+        // exercising the bootstrap-order guard exactly as on a rpt-runs-first cluster.
+        jdbc.execute("""
+            CREATE TABLE IF NOT EXISTS public.prg_report (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              client VARCHAR(16) NOT NULL,
+              report_type VARCHAR(12) NOT NULL DEFAULT 'PSR',
+              trigger_kind VARCHAR(16) NOT NULL,
+              window_key VARCHAR(64) NOT NULL DEFAULT 'W',
+              parent_source_msg_id VARCHAR(35),
+              file_name VARCHAR(128) NOT NULL,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now())""");
     }
 
-    /** agt_ops operational shapes (Task 6 brief), applied to the agt_ops database. */
+    /**
+     * agt_ops operational shapes (Task 6 brief), applied to the agt_ops database. Extended for
+     * SCRUM-58 file trace: file_arrival gains physical_filename (VARCHAR(512), owner width, the
+     * external inbound name the ops index surfaces) + quarantine_reason; launch_intent gains
+     * job_name (the outcome-seam name) + attempt; stage_outcome gains exit_code (agt 001 owner
+     * column). duplicate_delivery is deliberately NOT created here: the file-trace ops changelog
+     * MARK_RAN pre-creates it (byte-matching agt 006), so the pre-create actually runs.
+     */
     public static void createOpsTables(JdbcTemplate jdbc) {
         jdbc.execute("""
             CREATE TABLE IF NOT EXISTS public.file_arrival (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
               route_id VARCHAR(64) NOT NULL DEFAULT 'onhost-req',
               client_token VARCHAR(64), status VARCHAR(32) NOT NULL DEFAULT 'ROUTED',
+              physical_filename VARCHAR(512) NOT NULL DEFAULT 'seed.txt',
+              quarantine_reason VARCHAR(128),
               arrived_at TIMESTAMPTZ NOT NULL DEFAULT now())""");
         jdbc.execute("""
             CREATE TABLE IF NOT EXISTS public.launch_intent (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
               arrival_id UUID, stage VARCHAR(16) NOT NULL,
+              job_name VARCHAR(63),
               status VARCHAR(16) NOT NULL DEFAULT 'LAUNCHED',
+              attempt INT8 NOT NULL DEFAULT 0,
               created_at TIMESTAMPTZ NOT NULL DEFAULT now())""");
         jdbc.execute("""
             CREATE TABLE IF NOT EXISTS public.stage_outcome (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-              intent_id UUID NOT NULL, outcome VARCHAR(32) NOT NULL,
+              intent_id UUID NOT NULL, outcome VARCHAR(32) NOT NULL, exit_code INT8,
               observed_at TIMESTAMPTZ NOT NULL DEFAULT now(), attempt INT8 NOT NULL DEFAULT 0)""");
     }
 

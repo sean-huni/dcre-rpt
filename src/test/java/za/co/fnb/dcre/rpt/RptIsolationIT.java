@@ -38,14 +38,27 @@ class RptIsolationIT extends OltpPreseededTestBase {
             String own = role.toUpperCase();
             try (Connection c = RptSecurityIT.forRole(role); Statement s = c.createStatement()) {
                 for (String v : views) {
-                    ResultSet rs = s.executeQuery(
-                            "SELECT count(*) FROM rpt." + v + " WHERE client IS DISTINCT FROM '" + own + "'");
+                    // Client-facing views carry a client column and scope to the caller's own client;
+                    // the SCRUM-58 internal-only trace views (e.g. v_flow_trace, arrival/job-keyed with
+                    // no client column) return zero rows to any client role via the current_user
+                    // predicate. Both satisfy the no-foreign-client-leakage invariant.
+                    String sql = hasClientColumn(v)
+                            ? "SELECT count(*) FROM rpt." + v + " WHERE client IS DISTINCT FROM '" + own + "'"
+                            : "SELECT count(*) FROM rpt." + v;
+                    ResultSet rs = s.executeQuery(sql);
                     rs.next();
                     assertEquals(0, rs.getInt(1),
                             "view rpt." + v + " leaked foreign-client rows to " + role);
                 }
             }
         }
+    }
+
+    private boolean hasClientColumn(final String view) {
+        return !jdbc.queryForList(
+                "SELECT 1 FROM information_schema.columns "
+                        + "WHERE table_schema = 'rpt' AND table_name = ? AND column_name = 'client'",
+                Integer.class, view).isEmpty();
     }
 
     @Test

@@ -10,5 +10,6 @@
     <include file="db/changelog/2026/07/003-rpt-core-views.xml"/>
     <include file="db/changelog/2026/07/004-rpt-extended-views.xml"/>
     <include file="db/changelog/2026/07/005-rpt-run.xml"/>
+    <include file="db/changelog/2026/07/005-file-trace-views.xml"/>
 
 </databaseChangeLog>
