@@ -99,7 +99,15 @@
            legacy pre-split rows whose group_id is NULL.
          * PSR arm binds to the launching parent via crw_emission_group.source_msg_id (the group's
            parent MsgId), NOT a non-existent group.outbound_msg_id (outbound_msg_id lives on
-           crw_emission); the client predicate narrows the (client, source_msg_id, run_date) group. -->
+           crw_emission). REVIEW M4 (run_date fan-out fix): crw_emission_group is unique on
+           (client, source_msg_id, run_date) (crw 003 uq_emission_group_client_msg_run), so a bare
+           (client, source_msg_id) join fans a single PSR file out to one row per run_date, seeding
+           the killer query's arrival CTE with cross-run_date twins. prg_report carries no matching
+           run_date dimension (window_key is a free-form window label, created_at is report time,
+           neither equals crw_emission_group.run_date), so the arm reduces the group set to the
+           LATEST run_date per (client, source_msg_id) via DISTINCT ON, yielding exactly one arrival
+           per PSR file. run_date is unique within (client, source_msg_id), so the pick is
+           deterministic; a PSR reflects the current (most recent) emission of its parent. -->
     <changeSet id="005-v-file-index-rpt" author="dcre" runOnChange="true">
         <createView schemaName="rpt" viewName="v_file_index" replaceIfExists="true">
             SELECT * FROM (
@@ -151,7 +159,9 @@
               SELECT p.file_name::STRING, p.client::STRING, 'OUTBOUND', 'PSR', 'onhost-resp',
                      g.arrival_id, g.arrival_id, p.job_name, p.created_at, p.trigger_kind::STRING, 'prg_report'
                 FROM public.prg_report p
-                LEFT JOIN public.crw_emission_group g
+                LEFT JOIN (SELECT DISTINCT ON (client, source_msg_id) client, source_msg_id, arrival_id
+                             FROM public.crw_emission_group
+                            ORDER BY client, source_msg_id, run_date DESC) g
                        ON g.source_msg_id = p.parent_source_msg_id AND g.client = p.client
               UNION ALL
               SELECT r.job_name::STRING, 'DCRE'::STRING, 'INTERNAL', 'OUTCOME_SEAM', 'outcomes',
@@ -214,7 +224,9 @@
               SELECT g.arrival_id, p.job_name, 'PRG_REPORTED', p.created_at, p.file_name::STRING,
                      p.id, 'REPORT', 'CREATED_AT', NULL::UUID, NULL::INT, NULL::INT
                 FROM public.prg_report p
-                LEFT JOIN public.crw_emission_group g
+                LEFT JOIN (SELECT DISTINCT ON (client, source_msg_id) client, source_msg_id, arrival_id
+                             FROM public.crw_emission_group
+                            ORDER BY client, source_msg_id, run_date DESC) g
                        ON g.source_msg_id = p.parent_source_msg_id AND g.client = p.client
               UNION ALL
               SELECT NULL::UUID, r.job_name, 'RPT_OUTCOME', r.created_at, r.outcome::STRING,

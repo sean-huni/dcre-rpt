@@ -320,7 +320,61 @@ class FileTraceViewIT {
         }
     }
 
+    // ----- M4 regression: PSR arm must not fan out across run_dates (review M4) ---------------
+
+    /**
+     * A single parent MsgId re-emitted on two run_dates: {@code crw_emission_group} is unique on
+     * {@code (client, source_msg_id, run_date)} (crw 003 {@code uq_emission_group_client_msg_run}),
+     * so {@code (client, source_msg_id)} alone matches BOTH groups. prg_report carries no matching
+     * run_date dimension (window_key is a free-form label, created_at is report time), so the PSR
+     * arm binds to the LATEST-run_date group. One PSR file (one prg_report row) must resolve to
+     * exactly ONE arrival, else the killer query's arrival CTE is over-seeded with a cross-run_date
+     * twin's distinct arrival_id.
+     */
+    @Test
+    void psrFileWithTwoRunDateCollisionYieldsExactlyOneRowNotFanout() throws Exception {
+        final String af1 = "aaaaaaaa-0000-0000-0000-000000000001"; // earlier run_date arrival
+        final String af2 = "aaaaaaaa-0000-0000-0000-000000000002"; // later  run_date arrival (the live one)
+        try (Connection root = DriverManager.getConnection(
+                RptJobTest.CRDB.getJdbcUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword());
+             Statement s = root.createStatement()) {
+            s.execute("""
+                INSERT INTO public.crw_emission_group (id, arrival_id, client, source_msg_id, run_date) VALUES
+                ('aaaaaaaa-0000-0000-0000-0000000000fa','%s','FNBCC01','MSGFAN','2026-07-01'),
+                ('aaaaaaaa-0000-0000-0000-0000000000fb','%s','FNBCC01','MSGFAN','2026-07-02')"""
+                    .formatted(af1, af2));
+            s.execute("""
+                INSERT INTO public.prg_report (client, report_type, trigger_kind, window_key, parent_source_msg_id,
+                                               file_name, job_name, created_at)
+                VALUES ('FNBCC01','PSR','SCHEDULED','WFAN','MSGFAN','FNBCC01_PSR_FANOUT.txt','local-prg-777',
+                        '2026-07-02T16:00:00Z')""");
+        }
+        try (Connection c = RptSecurityIT.forRole("rpt_internal")) {
+            // exactly one v_file_index row for the PSR file (indexRow asserts a single row),
+            // bound to the LATEST run_date's arrival.
+            Map<String, String> psr = indexRow(c, "rpt.v_file_index", "FNBCC01_PSR_FANOUT.txt");
+            assertEquals("PSR", psr.get("kind"));
+            assertEquals(af2, psr.get("related_arrival_id"),
+                    "PSR binds to the latest-run_date group, not a cross-run_date fan-out");
+            assertEquals(af2, psr.get("arrival_id"));
+            // exactly one PRG_REPORTED flow row for that file: one arrival, not one per colliding run_date.
+            assertEquals(1, countFlowStepForFile(c, "rpt.v_flow_trace", "PRG_REPORTED", "FNBCC01_PSR_FANOUT.txt"),
+                    "one PRG_REPORTED flow row per PSR file, not one per colliding run_date");
+        }
+    }
+
     // ----- helpers ---------------------------------------------------------------------------
+
+    /** Row count of a flow-view step keyed on the file name it carries in {@code detail}. */
+    private int countFlowStepForFile(final Connection c, final String view, final String step,
+                                     final String fileName) throws SQLException {
+        try (Statement s = c.createStatement();
+             ResultSet rs = s.executeQuery("SELECT count(*) FROM " + view
+                     + " WHERE step = '" + step + "' AND detail = '" + fileName + "'")) {
+            assertTrue(rs.next());
+            return rs.getInt(1);
+        }
+    }
 
     /** Exactly one index-view row for the given file_name, as a column->string map. */
     private Map<String, String> indexRow(final Connection c, final String view, final String fileName)
