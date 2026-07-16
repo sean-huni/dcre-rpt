@@ -101,6 +101,20 @@ public final class FixtureSeeder {
               parent_source_msg_id VARCHAR(35),
               file_name VARCHAR(128) NOT NULL,
               created_at TIMESTAMPTZ NOT NULL DEFAULT now())""");
+        // prg_watermark (prg 001-prg.xml 003-prg-watermark-prg): per-client delta watermark keyed
+        // (client, e2e). Pre-dates SCRUM-58, so the support views treat it as assumed-present owner
+        // reality (like crw_emission / prg_report), NOT a MARK_RAN pre-create. Seeded here so the
+        // v_psr_watermark_lag CREATE VIEW resolves its dependency on a fresh test container.
+        jdbc.execute("""
+            CREATE TABLE IF NOT EXISTS public.prg_watermark (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              client VARCHAR(16) NOT NULL,
+              e2e VARCHAR(35) NOT NULL,
+              last_status VARCHAR(32) NOT NULL,
+              version BIGINT NOT NULL DEFAULT 0,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              UNIQUE (client, e2e))""");
     }
 
     /**

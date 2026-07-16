@@ -114,9 +114,10 @@ class RptOpsViewsIT {
              Statement s = root.createStatement()) {
             ResultSet rs = s.executeQuery("SELECT count(*) FROM rpt_databasechangelog");
             assertTrue(rs.next());
-            assertEquals(8, rs.getInt(1),
+            assertEquals(12, rs.getInt(1),
                     "rpt schema + two ops views + grants + file-trace (duplicate_delivery pre-create "
-                            + "+ two ops file views + grant) applied via rpt-prefixed history in agt_ops");
+                            + "+ two ops file views + grant) + four ops support-view (three views + grant) "
+                            + "applied via rpt-prefixed history in agt_ops");
         }
     }
 

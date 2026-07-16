@@ -71,8 +71,9 @@ class RptJobTest {
         assertEquals(BatchStatus.COMPLETED, run.getStatus());
         Integer changesets = jdbc.queryForObject(
                 "SELECT count(*) FROM rpt_databasechangelog", Integer.class);
-        assertEquals(21, changesets,
+        assertEquals(28, changesets,
                 "roles + batch-metadata + six core-view + six extended-view + rpt-run + six file-trace "
-                        + "(3 pre-create + 2 views + grant) changesets applied via rpt-prefixed history");
+                        + "(3 pre-create + 2 views + grant) + seven support-view (six views + grant) "
+                        + "changesets applied via rpt-prefixed history");
     }
 }

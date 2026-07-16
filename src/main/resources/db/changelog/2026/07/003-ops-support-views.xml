@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- SCRUM-58 Task 17: prod-support views (spec 11.3 Tier-2), ops DB (agt_ops). EXTENDS the
+         Task-12 ops view stack (002-ops-file-views.xml). No pre-creates: file_arrival,
+         launch_intent and stage_outcome pre-date this program (assumed present, as on the fleet).
+         All three views are INTERNAL: agt_ops grants SELECT to rpt_internal ONLY (no client-role
+         grant), so a client role is denied outright; the current_user IN predicate is
+         defense-in-depth on top and satisfies verifyViewPredicates.
+
+         Attempt bookkeeping resolved against the OWNER DDL (agt 005-orphan-attempts.xml):
+         launch_intent.attempt = the CURRENT attempt; stage_outcome carries (intent_id, attempt)
+         with UNIQUE(intent_id, attempt). Evidence, never a verdict (spec 11.1): no replay flag. -->
+
+    <!-- 1. v_ops_attempts (spec 11.3 #1) - one row per (intent_id, attempt). attempt_evidence_state
+         is derived purely from observation counts vs the intent's current attempt:
+           STALE_ATTEMPT  - this attempt is superseded by a newer current attempt;
+           UNOBSERVED     - the current attempt has no recorded stage_outcome yet;
+           CONFLICTING    - the observer recorded contradictory outcomes for the attempt
+                            (defense-in-depth: prod's UNIQUE(intent_id, attempt) normally precludes
+                            it, but the view does NOT assume the constraint - evidence not verdict);
+           CONSISTENT     - exactly one recorded outcome for the current attempt.
+         NO execution-duration column: the ledger records OBSERVATION time only (latest_observed_at
+         is observation time, never job-completion time). -->
+    <changeSet id="003-v-ops-attempts-rpt" author="dcre" runOnChange="true">
+        <createView schemaName="rpt" viewName="v_ops_attempts" replaceIfExists="true">
+            SELECT * FROM (
+              SELECT li.id AS intent_id, li.job_name, li.arrival_id, li.stage,
+                     p.attempt, li.attempt AS current_attempt,
+                     (p.attempt = li.attempt) AS is_current_attempt,
+                     count(so.id) AS observation_count,
+                     count(DISTINCT so.outcome) AS distinct_outcome_count,
+                     (CASE WHEN count(DISTINCT so.outcome) = 1 THEN max(so.outcome) ELSE NULL END)::STRING AS observed_outcome,
+                     max(so.observed_at) AS latest_observed_at,
+                     (CASE
+                        WHEN p.attempt &lt;&gt; li.attempt THEN 'STALE_ATTEMPT'
+                        WHEN count(so.id) = 0 THEN 'UNOBSERVED'
+                        WHEN count(DISTINCT so.outcome) &gt; 1 THEN 'CONFLICTING'
+                        ELSE 'CONSISTENT'
+                      END)::STRING AS attempt_evidence_state
+                FROM public.launch_intent li
+                JOIN (SELECT id AS intent_id, attempt FROM public.launch_intent
+                      UNION
+                      SELECT intent_id, attempt FROM public.stage_outcome) p ON p.intent_id = li.id
+                LEFT JOIN public.stage_outcome so ON so.intent_id = li.id AND so.attempt = p.attempt
+               GROUP BY li.id, li.job_name, li.arrival_id, li.stage, li.attempt, p.attempt
+            ) x WHERE current_user IN ('rpt_internal', 'root')
+        </createView>
+    </changeSet>
+
+    <!-- 2a. v_ops_stuck (spec 11.3 #2, ops side) - agt_ops wedge classes, oldest first. Sane
+         literal thresholds, NOTED: LAUNCHED_NO_OUTCOME and ARRIVAL_UNCLAIMED use a 15-minute grace
+         (a just-launched job / just-arrived file is not "stuck"); ATTEMPT_NEAR_EXHAUSTION fires at
+         attempt >= 3 (no max-attempts column exists on launch_intent, so 3 is the chosen literal
+         warning threshold). Age measured against now() at query time. -->
+    <changeSet id="003-v-ops-stuck-rpt" author="dcre" runOnChange="true">
+        <createView schemaName="rpt" viewName="v_ops_stuck" replaceIfExists="true">
+            SELECT * FROM (
+              SELECT 'LAUNCHED_NO_OUTCOME'::STRING AS wedge_class, fa.client_token::STRING AS client,
+                     li.arrival_id, li.job_name::STRING AS job_name, li.stage::STRING AS route,
+                     li.job_name::STRING AS subject, li.created_at AS stuck_since,
+                     (extract(epoch FROM (now() - li.created_at)) / 3600.0)::DECIMAL(12,2) AS age_hours,
+                     ('attempt=' || li.attempt::STRING || ' launched, no outcome recorded')::STRING AS detail,
+                     'launch_intent'::STRING AS source_table
+                FROM public.launch_intent li
+                LEFT JOIN public.file_arrival fa ON fa.id = li.arrival_id
+                LEFT JOIN public.stage_outcome so ON so.intent_id = li.id AND so.attempt = li.attempt
+               WHERE so.id IS NULL AND li.status = 'LAUNCHED'
+                 AND li.created_at &lt; now() - INTERVAL '15 minutes'
+              UNION ALL
+              SELECT 'ATTEMPT_NEAR_EXHAUSTION'::STRING, fa.client_token::STRING,
+                     li.arrival_id, li.job_name::STRING, li.stage::STRING,
+                     li.job_name::STRING, li.created_at,
+                     (extract(epoch FROM (now() - li.created_at)) / 3600.0)::DECIMAL(12,2),
+                     ('attempt=' || li.attempt::STRING || ' at/over warning threshold 3')::STRING,
+                     'launch_intent'::STRING
+                FROM public.launch_intent li
+                LEFT JOIN public.file_arrival fa ON fa.id = li.arrival_id
+               WHERE li.attempt &gt;= 3
+              UNION ALL
+              SELECT 'ARRIVAL_UNCLAIMED'::STRING, fa.client_token::STRING,
+                     fa.id, NULL::STRING, fa.route_id::STRING,
+                     fa.physical_filename::STRING, fa.arrived_at,
+                     (extract(epoch FROM (now() - fa.arrived_at)) / 3600.0)::DECIMAL(12,2),
+                     ('status=' || fa.status || ' with no launch_intent')::STRING,
+                     'file_arrival'::STRING
+                FROM public.file_arrival fa
+                LEFT JOIN public.launch_intent li ON li.arrival_id = fa.id
+               WHERE li.id IS NULL AND fa.status &lt;&gt; 'QUARANTINED'
+                 AND fa.arrived_at &lt; now() - INTERVAL '15 minutes'
+            ) x WHERE current_user IN ('rpt_internal', 'root')
+            ORDER BY stuck_since
+        </createView>
+    </changeSet>
+
+    <!-- 7. v_ops_client_day (spec 11.3 #7, ops side) - INTERNAL per-client-day rollup: files in,
+         quarantined, launched intents, recorded outcomes. count(DISTINCT ...) guards the
+         intent/outcome fan-out. -->
+    <changeSet id="003-v-ops-client-day-rpt" author="dcre" runOnChange="true">
+        <createView schemaName="rpt" viewName="v_ops_client_day" replaceIfExists="true">
+            SELECT * FROM (
+              SELECT fa.client_token::STRING AS client, fa.arrived_at::DATE AS process_date,
+                     count(DISTINCT fa.id) AS files_in,
+                     count(DISTINCT fa.id) FILTER (WHERE fa.status = 'QUARANTINED') AS quarantined,
+                     count(DISTINCT li.id) AS launched,
+                     count(DISTINCT so.id) AS outcomes
+                FROM public.file_arrival fa
+                LEFT JOIN public.launch_intent li ON li.arrival_id = fa.id
+                LEFT JOIN public.stage_outcome so ON so.intent_id = li.id
+               GROUP BY fa.client_token, fa.arrived_at::DATE
+            ) x WHERE current_user IN ('rpt_internal', 'root')
+        </createView>
+    </changeSet>
+
+    <!-- LIQUIBASE-SQL-EXCEPTION: GRANT has no typed tag; idempotent. Ops support views are
+         internal-only (no client grant on agt_ops); the current_user predicate is defense-in-depth
+         on top of the grants wall. -->
+    <changeSet id="003-ops-support-view-grants-rpt" author="dcre">
+        <sql>
+            GRANT SELECT ON ALL TABLES IN SCHEMA rpt TO rpt_internal;
+        </sql>
+    </changeSet>
+
+</databaseChangeLog>
