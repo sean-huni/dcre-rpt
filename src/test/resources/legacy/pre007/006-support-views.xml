@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <databaseChangeLog
+        logicalFilePath="db/changelog/2026/07/006-support-views.xml"
         xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
@@ -23,12 +24,7 @@
     <!-- 1. v_arrival_status (spec 11.3 #6) - CLIENT-SCOPED-SAFE. Session-identity predicate (the
          v_tx family's), NO filenames, NO job names: one row per inbound business arrival with tx
          counts, CIR outcome + written state, emission/reply counts by family, and a CONSERVATIVE
-         business state. Created BEFORE v_client_day (which reads it).
-         DELIBERATE ASYMMETRY vs the 007 v_tx spine: the isr/sbsr/pbsr reply-count arms bind
-         STRICTLY by emission_id and ignore the legacy outbound_msg_id=orgnl_msg_id arm, so an
-         arrival whose replies all arrived emission-unresolved shows reply counts of 0 (state
-         stays EMITTED) while rpt.v_tx already projects the bound statuses. Conservative on
-         purpose: ops triage counts only hard-resolved replies; v_client_day inherits this. -->
+         business state. Created BEFORE v_client_day (which reads it). -->
     <changeSet id="006-v-arrival-status-rpt" author="dcre" runOnChange="true">
         <createView schemaName="rpt" viewName="v_arrival_status" replaceIfExists="true">
             SELECT h.client_token AS client,
@@ -160,22 +156,13 @@
     <!-- 5. v_psr_watermark_lag (spec 11.3 #5) - INTERNAL. Per client PSR watermark staleness:
          hours_since_last_advance = time since ANY watermark row for the client last moved (the
          13h-frozen-PRG detector); non_terminal_rows = still-in-flight statuses. Evidence, not a
-         verdict: a high age with non-terminal rows is a hint, not a claim of failure.
-         007 Fintegrate-terminality correction folded in HERE (this runOnChange changeset is the
-         view's single owner; a duplicate 007 owner would be clobbered on the next 006 re-run).
-         Conservative by design: the legacy watermark key is only (client,e2e), so it cannot prove
-         whether a FAIL-prefixed value came from CTV or from Fintegrate when an E2E is resubmitted.
-         Until arrival_id+sequence (or equivalent provenance) is stored, only the four explicit
-         Fintegrate terminal codes (ACSC, ACCC, RJCT, CANC) close a row; CTV FAIL is intentionally
-         counted in non_terminal_rows rather than risking a false terminal classification. -->
+         verdict: a high age with non-terminal rows is a hint, not a claim of failure. -->
     <changeSet id="006-v-psr-watermark-lag-rpt" author="dcre" runOnChange="true">
         <createView schemaName="rpt" viewName="v_psr_watermark_lag" replaceIfExists="true">
             SELECT * FROM (
               SELECT w.client::STRING AS client,
                      count(*) AS watermark_rows,
-                     count(*) FILTER (
-                         WHERE w.last_status NOT IN ('ACSC', 'ACCC', 'RJCT', 'CANC')
-                     ) AS non_terminal_rows,
+                     count(*) FILTER (WHERE w.last_status NOT IN ('ACSC', 'RJCT')) AS non_terminal_rows,
                      min(w.updated_at) AS oldest_watermark_at,
                      max(w.updated_at) AS latest_watermark_at,
                      (extract(epoch FROM (now() - min(w.updated_at))) / 3600.0)::DECIMAL(12,2) AS oldest_watermark_age_hours,

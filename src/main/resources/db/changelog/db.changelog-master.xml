@@ -12,5 +12,6 @@
     <include file="db/changelog/2026/07/005-rpt-run.xml"/>
     <include file="db/changelog/2026/07/005-file-trace-views.xml"/>
     <include file="db/changelog/2026/07/006-support-views.xml"/>
+    <include file="db/changelog/2026/07/007-fintegrate-status-classification.xml"/>
 
 </databaseChangeLog>

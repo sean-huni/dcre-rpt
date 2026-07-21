@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        logicalFilePath="db/changelog/2026/07/004-rpt-extended-views.xml"
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <changeSet id="004-v-funnel-daily-rpt" author="dcre">
+        <createView schemaName="rpt" viewName="v_funnel_daily" replaceIfExists="true">
+            SELECT client, process_date, 'SUBMITTED' AS stage, 1 AS stage_order,
+                   count(*) AS tx_count, sum(amount) AS total_amount
+            FROM rpt.v_tx WHERE client = upper(current_user::STRING) OR current_user = 'rpt_internal'
+            GROUP BY client, process_date
+            UNION ALL
+            SELECT client, process_date, 'CTV_PASS', 2, count(*), sum(amount)
+            FROM rpt.v_tx WHERE ctv_outcome = 'PASS'
+              AND (client = upper(current_user::STRING) OR current_user = 'rpt_internal')
+            GROUP BY client, process_date
+            UNION ALL
+            SELECT client, process_date, 'EMITTED', 3, count(*), sum(amount)
+            FROM rpt.v_tx WHERE emitted
+              AND (client = upper(current_user::STRING) OR current_user = 'rpt_internal')
+            GROUP BY client, process_date
+            UNION ALL
+            SELECT client, process_date, 'SETTLED', 4, count(*), sum(amount)
+            FROM rpt.v_tx WHERE status = 'ACSC'
+              AND (client = upper(current_user::STRING) OR current_user = 'rpt_internal')
+            GROUP BY client, process_date
+        </createView>
+    </changeSet>
+
+    <changeSet id="004-v-latency-rpt" author="dcre">
+        <createView schemaName="rpt" viewName="v_latency" replaceIfExists="true">
+            SELECT h.client_token AS client,
+                   (substr(h.business_date,1,4)||'-'||substr(h.business_date,5,2)||'-'||substr(h.business_date,7,2))::DATE AS process_date,
+                   t.e2e, h.created_at AS ingested_at, ce.created_at AS emitted_at, p.created_at AS settled_at,
+                   ce.created_at - h.created_at AS ingest_to_emit,
+                   p.created_at - ce.created_at AS emit_to_settle,
+                   p.created_at - h.created_at AS end_to_end,
+                   (p.created_at::DATE - (substr(h.business_date,1,4)||'-'||substr(h.business_date,5,2)||'-'||substr(h.business_date,7,2))::DATE)::INT AS settlement_day_offset
+            FROM public.tx_entry t
+            JOIN public.tx_header h ON h.arrival_id = t.arrival_id
+            JOIN public.crw_emission_member cm ON cm.e2e = t.e2e
+            JOIN public.crw_emission ce ON ce.id = cm.emission_id
+            LEFT JOIN (SELECT DISTINCT ON (e2e) e2e, created_at FROM public.pbsr_resp ORDER BY e2e, created_at DESC) p ON p.e2e = t.e2e
+            WHERE h.client_token = upper(current_user::STRING) OR current_user = 'rpt_internal'
+        </createView>
+    </changeSet>
+
+    <changeSet id="004-v-recon-daily-rpt" author="dcre">
+        <createView schemaName="rpt" viewName="v_recon_daily" replaceIfExists="true">
+            SELECT h.client_token AS client, ce.run_date AS process_date, ce.file_name,
+                   count(cm.e2e) AS emitted_count, sum(cm.amount) AS control_sum,
+                   count(*) FILTER (WHERE p.status = 'ACSC') AS settled_count,
+                   COALESCE(sum(cm.amount) FILTER (WHERE p.status = 'ACSC'), 0) AS settled_sum,
+                   sum(cm.amount) - COALESCE(sum(cm.amount) FILTER (WHERE p.status = 'ACSC'), 0) AS variance
+            FROM public.crw_emission ce
+            JOIN public.crw_emission_member cm ON cm.emission_id = ce.id
+            JOIN public.tx_header h ON h.arrival_id = ce.arrival_id
+            LEFT JOIN (SELECT DISTINCT ON (e2e) e2e, status FROM public.pbsr_resp ORDER BY e2e, created_at DESC) p ON p.e2e = cm.e2e
+            WHERE h.client_token = upper(current_user::STRING) OR current_user = 'rpt_internal'
+            GROUP BY h.client_token, ce.run_date, ce.file_name
+        </createView>
+    </changeSet>
+
+    <changeSet id="004-v-cure-rpt" author="dcre">
+        <createView schemaName="rpt" viewName="v_cure" replaceIfExists="true">
+            SELECT f.client, f.debtor_account, f.process_date AS fail_date, f.reason, f.amount,
+                   min(s.process_date) AS cured_date,
+                   (min(s.process_date) - f.process_date)::INT AS days_to_cure
+            FROM rpt.v_fails f
+            LEFT JOIN rpt.v_tx s ON s.client = f.client AND s.debtor_account = f.debtor_account
+                 AND s.status = 'ACSC' AND s.process_date &gt; f.process_date
+            WHERE f.client = upper(current_user::STRING) OR current_user = 'rpt_internal'
+            GROUP BY f.client, f.debtor_account, f.process_date, f.reason, f.amount
+        </createView>
+    </changeSet>
+
+    <changeSet id="004-v-amount-buckets-rpt" author="dcre">
+        <createView schemaName="rpt" viewName="v_amount_buckets" replaceIfExists="true">
+            SELECT client, process_date,
+                   CASE WHEN amount &lt; 100 THEN 'A_0_100'
+                        WHEN amount &lt; 500 THEN 'B_100_500'
+                        WHEN amount &lt; 1000 THEN 'C_500_1K'
+                        WHEN amount &lt; 5000 THEN 'D_1K_5K'
+                        ELSE 'E_5K_PLUS' END AS bucket,
+                   count(*) AS tx_count, sum(amount) AS total_amount,
+                   count(*) FILTER (WHERE status = 'RJCT' OR status LIKE 'FAIL%') AS failed_count
+            FROM rpt.v_tx
+            WHERE client = upper(current_user::STRING) OR current_user = 'rpt_internal'
+            GROUP BY client, process_date, bucket
+        </createView>
+    </changeSet>
+
+    <!-- LIQUIBASE-SQL-EXCEPTION: explicit re-grant for the new views, GRANT has no typed tag; idempotent. -->
+    <changeSet id="004-view-grants-rpt" author="dcre">
+        <sql>
+            GRANT SELECT ON ALL TABLES IN SCHEMA rpt TO fnbcc01, fnbcc02, fnbrf01, rpt_internal;
+        </sql>
+    </changeSet>
+
+</databaseChangeLog>
