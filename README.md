@@ -12,6 +12,28 @@ Views owned by this module:
 - Extended: `v_funnel_daily`, `v_latency`, `v_recon_daily` (recon R-24), `v_cure`, `v_amount_buckets`
 - Ops (`agt_ops`, schema `rpt`, internal-only): `v_ops_stage_health`, `v_ops_sla`
 
+### Fintegrate status classification
+
+Migration `2026/07/007-fintegrate-status-classification.xml` is the reporting authority for the
+confirmed Fintegrate boundary:
+
+- Terminal success: `ACSC`, `ACCC`.
+- Terminal non-success: `RJCT`, `CANC`.
+- Accepted non-terminal: `ACSP`, `ACTC`, `ACCP`, `ACFC`.
+- Pending/interim: `RCVD`, `PDNG`, `PART`, `PATC`.
+- Unsupported by Fintegrate: `ACWC`, `ACWP`.
+
+Unsupported and unknown Fintegrate codes remain non-terminal and are never inferred as success or
+failure by reporting. In particular, a response code merely beginning with `FAIL` is still unknown;
+early validation failures come only from `ctv_outcome`. Terminal non-success is recognised at the
+deepest available Fintegrate response leg, including an ISR-level `RJCT`.
+
+`v_psr_watermark_lag.non_terminal_rows` is deliberately conservative. The legacy watermark stores
+only `(client, e2e, last_status)`, so only the four explicit Fintegrate terminal codes close a row;
+an ambiguous CTV `FAIL_*` remains counted rather than being falsely attributed to a particular
+transaction. Precise attribution requires the upstream watermark to add `arrival_id + sequence`
+(or equivalent emission/stage provenance).
+
 ## Why this service exists (LGTM does not replace it)
 
 A frequent question: the kind cluster already runs Grafana (the LGTM bundle), so why a separate `rpt` service? Because they sit in different layers and do not overlap.
@@ -94,7 +116,7 @@ Fixed by the changelogs (not env-tunable): Batch metadata under the `RPT_BATCH_`
 ./gradlew verifyViewPredicates   # session-identity gate alone (no Docker)
 ```
 
-Tests run against Testcontainers CockroachDB `cockroachdb/cockroach:v26.2.3`. The shared container pre-creates `agt_ops` and the OLTP fixture tables before any Spring context boots, because the view changesets validate their `public.*` dependencies at CREATE time. Suite: `RptJobTest` (job COMPLETED, 14 changesets in the rpt history), `RptCoreViewsIT` / `RptExtendedViewsIT` (golden results), `RptIsolationIT` (enumerates every `rpt` view and asserts zero foreign-client rows per client role), `RptSecurityIT` (grants wall, follower-read role defaults), `RptOpsViewsIT` (`agt_ops` views internal-only).
+Tests run against Testcontainers CockroachDB `cockroachdb/cockroach:v26.2.3`. The shared container pre-creates `agt_ops` and the OLTP fixture tables before any Spring context boots, because the view changesets validate their `public.*` dependencies at CREATE time. Suite: `RptJobTest` (job COMPLETED, 38 changesets in the rpt history), `RptCoreViewsIT` / `RptExtendedViewsIT` (golden results), `RptBatchCorrelationIT` (batch-scoped binding, fail-closed negatives), `RptEmissionCurrencyIT` (current-emission pick, re-emission no-double-count), `RptStatusClassificationMigrationIT` (legacy/fresh/half-applied/mid-changeset-kill convergence + rollback), `RptIsolationIT` (enumerates every `rpt` view and asserts zero foreign-client rows per client role), `RptSecurityIT` (grants wall, follower-read role defaults), `RptOpsViewsIT` (`agt_ops` views internal-only), `SupportViewIT` / `FileTraceViewIT` / `ViewPredicateConformanceIT` (support views, file trace, session-identity conformance).
 
 ## Local cluster deployment
 

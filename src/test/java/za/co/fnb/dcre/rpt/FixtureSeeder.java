@@ -69,9 +69,12 @@ public final class FixtureSeeder {
               file_name VARCHAR(128) NOT NULL,
               state VARCHAR(32) NOT NULL DEFAULT 'EMITTED',
               group_id UUID,
+              batch_ordinal INT NOT NULL DEFAULT 1,
+              outbound_msg_id VARCHAR(64),
               visible_at TIMESTAMPTZ,
               created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-              UNIQUE (arrival_id, run_date))""");
+              UNIQUE (arrival_id, run_date, batch_ordinal),
+              UNIQUE (outbound_msg_id))""");
         jdbc.execute("""
             CREATE TABLE IF NOT EXISTS public.crw_emission_group (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -151,7 +154,8 @@ public final class FixtureSeeder {
 
     public static void seed(JdbcTemplate jdbc) {
         jdbc.execute("DELETE FROM public.crw_emission_member; DELETE FROM public.crw_emission;"
-                + "DELETE FROM public.pbsr_resp; DELETE FROM public.validation_log;"
+                + "DELETE FROM public.pbsr_resp; DELETE FROM public.sbsr_resp; DELETE FROM public.isr_resp;"
+                + "DELETE FROM public.validation_log;"
                 + "DELETE FROM public.tx_entry; DELETE FROM public.tx_header");
         // arrivals: a1 CC01 d1, a2 CC01 d2, a3 CC02 d1, a4 RF01 d1
         jdbc.execute("""
@@ -183,15 +187,16 @@ public final class FixtureSeeder {
             ('00000000-0000-0000-0000-0000000000a3',2,'PASS'),
             ('00000000-0000-0000-0000-0000000000a4',1,'PASS')""");
         jdbc.execute("""
-            INSERT INTO public.pbsr_resp (response_file, e2e, status, reason, created_at) VALUES
-            ('PBSR_D1','E2E-CC1-002','ACSC',NULL,'2026-07-01T15:00:00Z'),
-            ('PBSR_D1','E2E-CC1-003','ACSC',NULL,'2026-07-01T15:00:00Z'),
-            ('PBSR_D1','E2E-CC1-004','RJCT','AC04','2026-07-01T15:00:00Z'),
-            ('PBSR_D2','E2E-CC1-005','ACSC',NULL,'2026-07-02T15:00:00Z'),
-            ('PBSR_D2','E2E-CC1-006','RJCT','AM04','2026-07-02T15:00:00Z'),
-            ('PBSR_D1','E2E-CC2-001','ACSC',NULL,'2026-07-01T15:05:00Z'),
-            ('PBSR_D1','E2E-CC2-002','ACSC',NULL,'2026-07-01T15:05:00Z'),
-            ('PBSR_D1','E2E-RF1-001','ACSC',NULL,'2026-07-01T15:10:00Z')""");
+            INSERT INTO public.pbsr_resp
+              (response_file, e2e, status, reason, emission_id, created_at) VALUES
+            ('PBSR_D1','E2E-CC1-002','ACCC',NULL,'00000000-0000-0000-0000-0000000000e1','2026-07-01T15:00:00Z'),
+            ('PBSR_D1','E2E-CC1-003','ACSC',NULL,'00000000-0000-0000-0000-0000000000e1','2026-07-01T15:00:00Z'),
+            ('PBSR_D1','E2E-CC1-004','CANC','AC04','00000000-0000-0000-0000-0000000000e1','2026-07-01T15:00:00Z'),
+            ('PBSR_D2','E2E-CC1-005','ACCC',NULL,'00000000-0000-0000-0000-0000000000e2','2026-07-02T15:00:00Z'),
+            ('PBSR_D2','E2E-CC1-006','RJCT','AM04','00000000-0000-0000-0000-0000000000e2','2026-07-02T15:00:00Z'),
+            ('PBSR_D1','E2E-CC2-001','ACCC',NULL,'00000000-0000-0000-0000-0000000000e3','2026-07-01T15:05:00Z'),
+            ('PBSR_D1','E2E-CC2-002','CANC','AM04','00000000-0000-0000-0000-0000000000e3','2026-07-01T15:05:00Z'),
+            ('PBSR_D1','E2E-RF1-001','ACSP',NULL,'00000000-0000-0000-0000-0000000000e4','2026-07-01T15:10:00Z')""");
         jdbc.execute("""
             INSERT INTO public.crw_emission (id, arrival_id, run_date, file_name) VALUES
             ('00000000-0000-0000-0000-0000000000e1','00000000-0000-0000-0000-0000000000a1','2026-07-01','CC01_D1_PAIN008'),
@@ -200,9 +205,9 @@ public final class FixtureSeeder {
             ('00000000-0000-0000-0000-0000000000e4','00000000-0000-0000-0000-0000000000a4','2026-07-01','RF01_D1_PAIN008')""");
         jdbc.execute("""
             INSERT INTO public.crw_emission_member (emission_id, sequence, e2e, amount) VALUES
-            ('00000000-0000-0000-0000-0000000000e1',1,'E2E-CC1-002',100.00),
-            ('00000000-0000-0000-0000-0000000000e1',2,'E2E-CC1-003',200.00),
-            ('00000000-0000-0000-0000-0000000000e1',3,'E2E-CC1-004',300.00),
+            ('00000000-0000-0000-0000-0000000000e1',2,'E2E-CC1-002',100.00),
+            ('00000000-0000-0000-0000-0000000000e1',3,'E2E-CC1-003',200.00),
+            ('00000000-0000-0000-0000-0000000000e1',4,'E2E-CC1-004',300.00),
             ('00000000-0000-0000-0000-0000000000e2',1,'E2E-CC1-005',400.00),
             ('00000000-0000-0000-0000-0000000000e2',2,'E2E-CC1-006',100.00),
             ('00000000-0000-0000-0000-0000000000e3',1,'E2E-CC2-001',1000.00),

@@ -46,6 +46,7 @@ class SupportViewIT {
     private static final String A2 = "00000000-0000-0000-0000-0000000000a2"; // FNBCC02 (cross-client scoping)
     private static final String ASW = "00000000-0000-0000-0000-0000000000a3"; // STAGED_NOT_WRITTEN
     private static final String AEV = "00000000-0000-0000-0000-0000000000a4"; // EMISSION_VISIBLE_NO_REPLY
+    private static final String AX = "00000000-0000-0000-0000-0000000000a5"; // external unknown FAILX
 
     // ops intents
     private static final String IC = "00000000-0000-0000-0000-0000000000c1"; // CONSISTENT
@@ -120,7 +121,23 @@ class SupportViewIT {
             s.execute("""
                 INSERT INTO public.prg_watermark (client, e2e, last_status, updated_at) VALUES
                 ('FNBCC01','E2E1','ACSC','2026-07-01T10:20:00Z'),
-                ('FNBCC01','E2E2','CTV_PASS','2026-07-01T10:20:00Z')""");
+                ('FNBCC01','E2E2','ACCC','2026-07-01T10:20:00Z'),
+                ('FNBCC01','E2E3','RJCT','2026-07-01T10:20:00Z'),
+                ('FNBCC01','E2E4','CANC','2026-07-01T10:20:00Z'),
+                ('FNBCC01','E2E5','ACCP','2026-07-01T10:20:00Z'),
+                ('FNBCC01','E2E6','ACSP','2026-07-01T10:20:00Z'),
+                ('FNBCC01','E2E7','ACTC','2026-07-01T10:20:00Z'),
+                ('FNBCC01','E2E8','ACFC','2026-07-01T10:20:00Z'),
+                ('FNBCC01','E2E9','RCVD','2026-07-01T10:20:00Z'),
+                ('FNBCC01','E2E10','PDNG','2026-07-01T10:20:00Z'),
+                ('FNBCC01','E2E11','PATC','2026-07-01T10:20:00Z'),
+                ('FNBCC01','E2E12','PART','2026-07-01T10:20:00Z'),
+                ('FNBCC01','E2E13','ACWC','2026-07-01T10:20:00Z'),
+                ('FNBCC01','E2E14','ACWP','2026-07-01T10:20:00Z'),
+                ('FNBCC01','E2E-CTV-FAIL','FAIL_ACCOUNT_NOT_FOUND','2026-07-01T10:20:00Z'),
+                ('FNBCC01','E2E16','CTV_PASS','2026-07-01T10:20:00Z'),
+                ('FNBCC01','E2E17','ZZZZ','2026-07-01T10:20:00Z'),
+                ('FNBCC01','E2E-EXTERNAL-FAIL','FAILX','2026-07-01T10:20:00Z')""");
 
             // ---- A2: FNBCC02 arrival (cross-client scoping for v_arrival_status/v_client_day) ----
             s.execute("""
@@ -131,11 +148,32 @@ class SupportViewIT {
                 INSERT INTO public.validation_log (arrival_id, sequence, outcome, created_at)
                 VALUES ('%s',1,'FAIL_ACCOUNT_NOT_FOUND','2026-07-01T08:06:00Z')""".formatted(A2));
 
+            // ---- AX: external FAILX must remain non-terminal (not a CTV FAIL_* verdict) ----
+            s.execute("""
+                INSERT INTO public.tx_header (id, arrival_id, msg_id, client_token, business_date, tx_count, created_at)
+                VALUES ('00000000-0000-0000-0000-0000000000b5','%s','MSGX','FNBCC01','20260701',1,'2026-07-01T08:07:00Z')"""
+                    .formatted(AX));
+            s.execute("""
+                INSERT INTO public.tx_entry (arrival_id, sequence, e2e, amount) VALUES
+                ('%s',1,'E2E-EXTERNAL-FAIL',300.00)""".formatted(AX));
+            s.execute("""
+                INSERT INTO public.validation_log (arrival_id, sequence, outcome, created_at)
+                VALUES ('%s',1,'PASS','2026-07-01T08:08:00Z')""".formatted(AX));
+            s.execute("""
+                INSERT INTO public.pbsr_resp (response_file, e2e, status, created_at)
+                VALUES ('FNBCC01_PBSR_FAILX.txt','E2E-EXTERNAL-FAIL','FAILX','2026-07-01T10:10:00Z')""");
+
             // ---- ASW: STAGED_NOT_WRITTEN (cir_response written_at NULL, aged) ----
             s.execute("""
                 INSERT INTO public.tx_header (id, arrival_id, msg_id, client_token, business_date, tx_count, created_at)
                 VALUES ('00000000-0000-0000-0000-0000000000b3','%s','MSGSW','FNBCC01','20260701',1,'2026-07-01T08:00:00Z')"""
                     .formatted(ASW));
+            s.execute("""
+                INSERT INTO public.tx_entry (arrival_id, sequence, e2e, amount) VALUES
+                ('%s',1,'E2E-CTV-FAIL',100.00)""".formatted(ASW));
+            s.execute("""
+                INSERT INTO public.validation_log (arrival_id, sequence, outcome, created_at)
+                VALUES ('%s',1,'FAIL_ACCOUNT_NOT_FOUND','2026-07-01T08:01:00Z')""".formatted(ASW));
             s.execute("""
                 INSERT INTO public.cir_response (arrival_id, client, msg_id, route_id, outcome, file_name,
                                                  accepted_count, total_count, written_at, created_at)
@@ -318,8 +356,33 @@ class SupportViewIT {
                     "SELECT non_terminal_rows, hours_since_last_advance FROM rpt.v_psr_watermark_lag "
                             + "WHERE client = 'FNBCC01'");
             assertTrue(lag.next());
-            assertEquals(1, lag.getInt("non_terminal_rows"), "one non-terminal (CTV_PASS) watermark row");
+            assertEquals(14, lag.getInt("non_terminal_rows"),
+                    "fail-closed watermark counting includes ambiguous CTV FAIL until provenance exists");
             assertTrue(lag.getDouble("hours_since_last_advance") > 24, "watermark frozen for many hours");
+        }
+    }
+
+    // ----- (c'') AX fixture guarantee: external FAILX stays non-terminal ----------------------
+
+    @Test
+    void externalFailxStaysNonTerminalAndNeverBecomesACtvVerdict() throws Exception {
+        // The AX fixture comment's claim, asserted: the FAILX PBSR row carries neither response
+        // identity (emission_id NULL, orgnl_msg_id matches no outbound_msg_id), so it binds
+        // nowhere; AX keeps its CTV evidence and FAILX is never reported as a CTV FAIL_* verdict
+        // or as any terminal outcome.
+        try (Connection c = RptSecurityIT.forRole("fnbcc01"); Statement s = c.createStatement()) {
+            ResultSet tx = s.executeQuery(
+                    "SELECT status, ctv_outcome FROM rpt.v_tx WHERE arrival_id = '" + AX + "'");
+            assertTrue(tx.next());
+            assertEquals("CTV_PASS", tx.getString("status"),
+                    "unbound FAILX leaves AX at its CTV evidence, not a terminal verdict");
+            assertEquals("PASS", tx.getString("ctv_outcome"), "FAILX is not a CTV FAIL_* outcome");
+            assertFalse(tx.next());
+
+            ResultSet fails = s.executeQuery(
+                    "SELECT count(*) FROM rpt.v_fails WHERE e2e = 'E2E-EXTERNAL-FAIL'");
+            assertTrue(fails.next());
+            assertEquals(0, fails.getInt(1), "FAILX must never surface as a failure row");
         }
     }
 
