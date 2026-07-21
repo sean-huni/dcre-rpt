@@ -93,9 +93,10 @@ class RptExtendedViewsIT extends OltpPreseededTestBase {
         FixtureSeeder.seed(jdbc);
         try (Connection c = RptSecurityIT.forRole("fnbcc02"); Statement s = c.createStatement()) {
             ResultSet rs = s.executeQuery("""
-                SELECT bucket, tx_count FROM rpt.v_amount_buckets
+                SELECT bucket, tx_count, failed_count FROM rpt.v_amount_buckets
                 WHERE process_date = '2026-07-01' ORDER BY bucket""");
             assertTrue(rs.next()); assertEquals("D_1K_5K", rs.getString(1)); assertEquals(2, rs.getInt(2));
+            assertEquals(1, rs.getInt("failed_count"), "CANC is a terminal non-success");
             assertFalse(rs.next(), "1000 and 2000 both land in D_1K_5K (bucket edges: >=1000 <5000)");
         }
     }

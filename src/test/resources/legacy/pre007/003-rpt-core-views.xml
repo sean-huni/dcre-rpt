@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        logicalFilePath="db/changelog/2026/07/003-rpt-core-views.xml"
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <changeSet id="003-v-tx-rpt" author="dcre">
+        <createView schemaName="rpt" viewName="v_tx" replaceIfExists="true">
+            SELECT h.client_token AS client,
+                   (substr(h.business_date,1,4)||'-'||substr(h.business_date,5,2)||'-'||substr(h.business_date,7,2))::DATE AS process_date,
+                   t.arrival_id, t.sequence, t.e2e,
+                   t.debtor_account, t.debtor_name, t.creditor_account, t.currency, t.amount,
+                   COALESCE(p.status, s.status, i.status,
+                            CASE WHEN v.outcome = 'PASS' THEN 'CTV_PASS' ELSE v.outcome END) AS status,
+                   v.outcome AS ctv_outcome, v.detail AS ctv_detail, v.created_at AS validated_at,
+                   p.status AS pbsr_status, p.reason AS pbsr_reason,
+                   h.created_at AS ingested_at, p.created_at AS settled_at,
+                   EXISTS (SELECT 1 FROM public.crw_emission_member m WHERE m.e2e = t.e2e) AS emitted,
+                   row_number() OVER (PARTITION BY h.client_token, t.e2e ORDER BY h.created_at, t.arrival_id) > 1 AS is_resubmission
+            FROM public.tx_entry t
+            JOIN public.tx_header h ON h.arrival_id = t.arrival_id
+            LEFT JOIN public.validation_log v ON v.arrival_id = t.arrival_id AND v.sequence = t.sequence
+            LEFT JOIN (SELECT DISTINCT ON (e2e) e2e, status, reason, created_at FROM public.pbsr_resp ORDER BY e2e, created_at DESC) p ON p.e2e = t.e2e
+            LEFT JOIN (SELECT DISTINCT ON (e2e) e2e, status FROM public.sbsr_resp ORDER BY e2e, created_at DESC) s ON s.e2e = t.e2e
+            LEFT JOIN (SELECT DISTINCT ON (e2e) e2e, status FROM public.isr_resp ORDER BY e2e, created_at DESC) i ON i.e2e = t.e2e
+            WHERE h.client_token = upper(current_user::STRING) OR current_user = 'rpt_internal'
+        </createView>
+    </changeSet>
+
+    <changeSet id="003-v-tx-daily-rpt" author="dcre">
+        <createView schemaName="rpt" viewName="v_tx_daily" replaceIfExists="true">
+            SELECT client, process_date,
+                   count(*) AS tx_count,
+                   sum(amount) AS total_amount,
+                   count(*) FILTER (WHERE status = 'ACSC') AS settled_count,
+                   COALESCE(sum(amount) FILTER (WHERE status = 'ACSC'), 0) AS settled_amount,
+                   count(*) FILTER (WHERE status = 'RJCT') AS rejected_late_count,
+                   COALESCE(sum(amount) FILTER (WHERE status = 'RJCT'), 0) AS rejected_late_amount,
+                   count(*) FILTER (WHERE status LIKE 'FAIL%') AS rejected_early_count,
+                   COALESCE(sum(amount) FILTER (WHERE status LIKE 'FAIL%'), 0) AS rejected_early_amount,
+                   count(*) FILTER (WHERE is_resubmission) AS resubmission_count,
+                   percentile_cont(0.5) WITHIN GROUP (ORDER BY amount::FLOAT8)::DECIMAL(18,2) AS p50_amount,
+                   percentile_cont(0.95) WITHIN GROUP (ORDER BY amount::FLOAT8)::DECIMAL(18,2) AS p95_amount,
+                   stddev(amount) AS stddev_amount
+            FROM rpt.v_tx
+            WHERE client = upper(current_user::STRING) OR current_user = 'rpt_internal'
+            GROUP BY client, process_date
+        </createView>
+    </changeSet>
+
+    <changeSet id="003-v-fails-rpt" author="dcre">
+        <createView schemaName="rpt" viewName="v_fails" replaceIfExists="true">
+            SELECT client, process_date, 'CTV' AS stage, ctv_outcome AS reason, e2e, debtor_account, amount,
+                   ingested_at AS submitted_at, validated_at AS detected_at
+            FROM rpt.v_tx
+            WHERE ctv_outcome LIKE 'FAIL%'
+              AND (client = upper(current_user::STRING) OR current_user = 'rpt_internal')
+            UNION ALL
+            SELECT client, process_date, 'PBSR' AS stage, pbsr_reason AS reason, e2e, debtor_account, amount,
+                   ingested_at AS submitted_at, settled_at AS detected_at
+            FROM rpt.v_tx
+            WHERE pbsr_status = 'RJCT'
+              AND (client = upper(current_user::STRING) OR current_user = 'rpt_internal')
+        </createView>
+    </changeSet>
+
+    <changeSet id="003-v-reason-daily-rpt" author="dcre">
+        <createView schemaName="rpt" viewName="v_reason_daily" replaceIfExists="true">
+            SELECT client, process_date, stage, reason,
+                   count(*) AS fail_count, sum(amount) AS fail_amount
+            FROM rpt.v_fails
+            WHERE client = upper(current_user::STRING) OR current_user = 'rpt_internal'
+            GROUP BY client, process_date, stage, reason
+        </createView>
+    </changeSet>
+
+    <changeSet id="003-v-debtor-daily-rpt" author="dcre">
+        <createView schemaName="rpt" viewName="v_debtor_daily" replaceIfExists="true">
+            SELECT client, debtor_account, process_date,
+                   count(*) AS tx_count, sum(amount) AS total_amount,
+                   count(*) FILTER (WHERE status = 'ACSC') AS settled_count,
+                   count(*) FILTER (WHERE status = 'RJCT' OR status LIKE 'FAIL%') AS failed_count,
+                   COALESCE(sum(amount) FILTER (WHERE status = 'RJCT' OR status LIKE 'FAIL%'), 0) AS failed_amount
+            FROM rpt.v_tx
+            WHERE client = upper(current_user::STRING) OR current_user = 'rpt_internal'
+            GROUP BY client, debtor_account, process_date
+        </createView>
+    </changeSet>
+
+    <!-- LIQUIBASE-SQL-EXCEPTION: explicit re-grant, GRANT has no typed tag; idempotent. -->
+    <changeSet id="003-view-grants-rpt" author="dcre">
+        <sql>
+            GRANT SELECT ON ALL TABLES IN SCHEMA rpt TO fnbcc01, fnbcc02, fnbrf01, rpt_internal;
+        </sql>
+    </changeSet>
+
+</databaseChangeLog>
