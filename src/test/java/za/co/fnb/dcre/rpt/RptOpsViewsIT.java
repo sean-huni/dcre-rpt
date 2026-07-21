@@ -41,8 +41,9 @@ class RptOpsViewsIT {
         try (Connection root = DriverManager.getConnection(
                 RptJobTest.opsDbUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword());
              Statement s = root.createStatement()) {
-            s.execute("DELETE FROM public.stage_outcome; DELETE FROM public.launch_intent;"
-                    + "DELETE FROM public.file_arrival");
+            // duplicate_delivery FKs file_arrival(id): delete child-first (SCRUM-58 file trace).
+            s.execute("DELETE FROM public.duplicate_delivery; DELETE FROM public.stage_outcome;"
+                    + "DELETE FROM public.launch_intent; DELETE FROM public.file_arrival");
             s.execute("""
                 INSERT INTO public.file_arrival (id, client_token, arrived_at) VALUES
                 ('00000000-0000-0000-0000-0000000000a1','FNBCC01','2026-07-01T08:00:00Z')""");
@@ -113,8 +114,10 @@ class RptOpsViewsIT {
              Statement s = root.createStatement()) {
             ResultSet rs = s.executeQuery("SELECT count(*) FROM rpt_databasechangelog");
             assertTrue(rs.next());
-            assertEquals(4, rs.getInt(1),
-                    "rpt schema + two ops views + grants applied via rpt-prefixed history in agt_ops");
+            assertEquals(12, rs.getInt(1),
+                    "rpt schema + two ops views + grants + file-trace (duplicate_delivery pre-create "
+                            + "+ two ops file views + grant) + four ops support-view (three views + grant) "
+                            + "applied via rpt-prefixed history in agt_ops");
         }
     }
 

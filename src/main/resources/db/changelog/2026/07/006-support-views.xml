@@ -1,0 +1,223 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- SCRUM-58 Task 17: prod-support views (spec 11.3 Tier-2), business DB (dcre_collections).
+         EXTENDS the Task-12 view stack (005-file-trace-views.xml): same rpt schema, same
+         session-identity discipline, same verifyViewPredicates gate (every createView body carries
+         current_user). No new pre-creates: cir_response is MARK_RAN pre-created by 005 (runs first),
+         prg_watermark/crw_emission[_group|_member]/*_resp/validation_log pre-date this program and
+         are assumed present as on the fleet (the 005 comment's owner-base-table assumption).
+
+         Evidence, never a verdict (spec 11.1): NO safe-to-replay/replay-verdict view exists here.
+         Every column reports what the database records; the operator decides.
+
+         ::STRING casts on every free-text UNION-ALL column dodge the CRDB UNION-ALL
+         width-narrowing bug Task 12 found. Join columns resolved against the owner changelogs
+         (prg 001-prg.xml prg_watermark, crw 003 split crw_emission.group_id, cir 003-cir-response,
+         {ixr,sxr,pxr} *_resp.emission_id) at authoring time. -->
+
+    <!-- 1. v_arrival_status (spec 11.3 #6) - CLIENT-SCOPED-SAFE. Session-identity predicate (the
+         v_tx family's), NO filenames, NO job names: one row per inbound business arrival with tx
+         counts, CIR outcome + written state, emission/reply counts by family, and a CONSERVATIVE
+         business state. Created BEFORE v_client_day (which reads it). -->
+    <changeSet id="006-v-arrival-status-rpt" author="dcre" runOnChange="true">
+        <createView schemaName="rpt" viewName="v_arrival_status" replaceIfExists="true">
+            SELECT h.client_token AS client,
+                   (substr(h.business_date,1,4)||'-'||substr(h.business_date,5,2)||'-'||substr(h.business_date,7,2))::DATE AS process_date,
+                   h.arrival_id,
+                   h.tx_count,
+                   COALESCE(vl.accepted, 0) AS accepted_count,
+                   COALESCE(vl.rejected, 0) AS rejected_count,
+                   GREATEST(h.tx_count - COALESCE(vl.accepted,0) - COALESCE(vl.rejected,0), 0) AS pending_count,
+                   cir.outcome AS cir_outcome,
+                   (cir.written_at IS NOT NULL) AS cir_written,
+                   COALESCE(em.emission_count, 0) AS emission_count,
+                   COALESCE(em.member_count, 0) AS emitted_member_count,
+                   COALESCE(ir.n, 0) AS isr_reply_count,
+                   COALESCE(sr.n, 0) AS sbsr_reply_count,
+                   COALESCE(pr.n, 0) AS pbsr_reply_count,
+                   (CASE
+                      WHEN COALESCE(em.emission_count,0) = 0 AND COALESCE(vl.rejected,0) > 0 THEN 'VALIDATION_FAILED'
+                      WHEN COALESCE(em.emission_count,0) > 0 AND COALESCE(em.member_count,0) > 0
+                           AND COALESCE(pr.n,0) >= em.member_count THEN 'REPLIED'
+                      WHEN COALESCE(em.emission_count,0) > 0 AND COALESCE(pr.n,0) > 0 THEN 'PARTIALLY_REPLIED'
+                      ELSE 'EMITTED'
+                    END)::STRING AS conservative_state
+            FROM public.tx_header h
+            LEFT JOIN (SELECT arrival_id,
+                              count(*) FILTER (WHERE outcome = 'PASS') AS accepted,
+                              count(*) FILTER (WHERE outcome LIKE 'FAIL%') AS rejected
+                       FROM public.validation_log GROUP BY arrival_id) vl ON vl.arrival_id = h.arrival_id
+            LEFT JOIN public.cir_response cir ON cir.arrival_id = h.arrival_id
+            LEFT JOIN (SELECT e.arrival_id, count(DISTINCT e.id) AS emission_count, count(m.id) AS member_count
+                       FROM public.crw_emission e
+                       LEFT JOIN public.crw_emission_member m ON m.emission_id = e.id
+                       GROUP BY e.arrival_id) em ON em.arrival_id = h.arrival_id
+            LEFT JOIN (SELECT e.arrival_id, count(*) AS n FROM public.isr_resp r
+                       JOIN public.crw_emission e ON e.id = r.emission_id GROUP BY e.arrival_id) ir ON ir.arrival_id = h.arrival_id
+            LEFT JOIN (SELECT e.arrival_id, count(*) AS n FROM public.sbsr_resp r
+                       JOIN public.crw_emission e ON e.id = r.emission_id GROUP BY e.arrival_id) sr ON sr.arrival_id = h.arrival_id
+            LEFT JOIN (SELECT e.arrival_id, count(*) AS n FROM public.pbsr_resp r
+                       JOIN public.crw_emission e ON e.id = r.emission_id GROUP BY e.arrival_id) pr ON pr.arrival_id = h.arrival_id
+            WHERE h.client_token = upper(current_user::STRING) OR current_user = 'rpt_internal'
+        </createView>
+    </changeSet>
+
+    <!-- 7. v_client_day (spec 11.3 #7, business side) - CLIENT-SCOPED-SAFE per-client-day rollup,
+         composed PURELY from v_arrival_status so it inherits the same session scoping and exposes
+         zero filenames/job names by construction. "Reports out" is a clock-scoped artifact surfaced
+         on the internal ops/psr views, deliberately omitted from the client-safe day rollup. -->
+    <changeSet id="006-v-client-day-rpt" author="dcre" runOnChange="true">
+        <createView schemaName="rpt" viewName="v_client_day" replaceIfExists="true">
+            SELECT client, process_date,
+                   count(*) AS arrivals,
+                   sum(tx_count) AS tx_count,
+                   sum(accepted_count) AS accepted_tx,
+                   sum(rejected_count) AS rejected_tx,
+                   count(*) FILTER (WHERE cir_outcome = 'ACK') AS ack_arrivals,
+                   count(*) FILTER (WHERE cir_outcome = 'NACK') AS nack_arrivals,
+                   sum(emission_count) AS emissions,
+                   sum(pbsr_reply_count) AS pbsr_replies,
+                   count(*) FILTER (WHERE conservative_state = 'REPLIED') AS replied_arrivals
+            FROM rpt.v_arrival_status
+            WHERE client = upper(current_user::STRING) OR current_user = 'rpt_internal'
+            GROUP BY client, process_date
+        </createView>
+    </changeSet>
+
+    <!-- 3. v_correlation_index (spec 11.3 #3) - INTERNAL. key_type/key_value -> arrival. Callers
+         usually hold a MsgId or e2e, not a filename; this feeds the killer query. EXACT/sargable
+         values ONLY: no lower()/trim/hash rewriting in the view, and no underlying index created
+         (separate prod evidence required). source_key is the owner PK for drill-through. -->
+    <changeSet id="006-v-correlation-index-rpt" author="dcre" runOnChange="true">
+        <createView schemaName="rpt" viewName="v_correlation_index" replaceIfExists="true">
+            SELECT * FROM (
+              SELECT 'MSG_ID'::STRING AS key_type, h.msg_id::STRING AS key_value, h.client_token::STRING AS client,
+                     h.arrival_id, h.arrival_id AS related_arrival_id, NULL::STRING AS job_name,
+                     'tx_header'::STRING AS source_table, h.id AS source_key
+                FROM public.tx_header h
+              UNION ALL
+              SELECT 'END_TO_END_ID'::STRING, t.e2e::STRING, h.client_token::STRING,
+                     t.arrival_id, t.arrival_id, NULL::STRING, 'tx_entry'::STRING, t.id
+                FROM public.tx_entry t JOIN public.tx_header h ON h.arrival_id = t.arrival_id
+              UNION ALL
+              SELECT 'MSG_ID'::STRING, c.msg_id::STRING, c.client::STRING,
+                     c.arrival_id, c.arrival_id, NULL::STRING, 'cir_response'::STRING, c.id
+                FROM public.cir_response c
+              UNION ALL
+              SELECT 'END_TO_END_ID'::STRING, r.e2e::STRING,
+                     COALESCE(g.client, split_part(r.response_file, '_', 1))::STRING,
+                     e.arrival_id, e.arrival_id, NULL::STRING, 'isr_resp'::STRING, r.id
+                FROM public.isr_resp r
+                LEFT JOIN public.crw_emission e ON e.id = r.emission_id
+                LEFT JOIN public.crw_emission_group g ON g.id = e.group_id
+              UNION ALL
+              SELECT 'END_TO_END_ID'::STRING, r.e2e::STRING,
+                     COALESCE(g.client, split_part(r.response_file, '_', 1))::STRING,
+                     e.arrival_id, e.arrival_id, NULL::STRING, 'sbsr_resp'::STRING, r.id
+                FROM public.sbsr_resp r
+                LEFT JOIN public.crw_emission e ON e.id = r.emission_id
+                LEFT JOIN public.crw_emission_group g ON g.id = e.group_id
+              UNION ALL
+              SELECT 'END_TO_END_ID'::STRING, r.e2e::STRING,
+                     COALESCE(g.client, split_part(r.response_file, '_', 1))::STRING,
+                     e.arrival_id, e.arrival_id, NULL::STRING, 'pbsr_resp'::STRING, r.id
+                FROM public.pbsr_resp r
+                LEFT JOIN public.crw_emission e ON e.id = r.emission_id
+                LEFT JOIN public.crw_emission_group g ON g.id = e.group_id
+            ) x WHERE current_user IN ('rpt_internal', 'root')
+        </createView>
+    </changeSet>
+
+    <!-- 4. v_emission_visibility (spec 11.3 #4) - INTERNAL. Per crw_emission_group: VISIBLE counts +
+         first_crw_visible_at (crw_emission.visible_at) = the strong do-not-re-emit evidence. -->
+    <changeSet id="006-v-emission-visibility-rpt" author="dcre" runOnChange="true">
+        <createView schemaName="rpt" viewName="v_emission_visibility" replaceIfExists="true">
+            SELECT * FROM (
+              SELECT g.id AS group_id, g.arrival_id, g.client::STRING AS client,
+                     g.source_msg_id::STRING AS source_msg_id, g.run_date,
+                     count(e.id) AS emission_count,
+                     count(e.visible_at) AS visible_count,
+                     count(e.id) FILTER (WHERE e.visible_at IS NULL) AS not_visible_count,
+                     min(e.visible_at) AS first_crw_visible_at,
+                     max(e.visible_at) AS last_crw_visible_at
+                FROM public.crw_emission_group g
+                LEFT JOIN public.crw_emission e ON e.group_id = g.id
+               GROUP BY g.id, g.arrival_id, g.client, g.source_msg_id, g.run_date
+            ) x WHERE current_user IN ('rpt_internal', 'root')
+        </createView>
+    </changeSet>
+
+    <!-- 5. v_psr_watermark_lag (spec 11.3 #5) - INTERNAL. Per client PSR watermark staleness:
+         hours_since_last_advance = time since ANY watermark row for the client last moved (the
+         13h-frozen-PRG detector); non_terminal_rows = still-in-flight statuses. Evidence, not a
+         verdict: a high age with non-terminal rows is a hint, not a claim of failure. -->
+    <changeSet id="006-v-psr-watermark-lag-rpt" author="dcre" runOnChange="true">
+        <createView schemaName="rpt" viewName="v_psr_watermark_lag" replaceIfExists="true">
+            SELECT * FROM (
+              SELECT w.client::STRING AS client,
+                     count(*) AS watermark_rows,
+                     count(*) FILTER (WHERE w.last_status NOT IN ('ACSC', 'RJCT')) AS non_terminal_rows,
+                     min(w.updated_at) AS oldest_watermark_at,
+                     max(w.updated_at) AS latest_watermark_at,
+                     (extract(epoch FROM (now() - min(w.updated_at))) / 3600.0)::DECIMAL(12,2) AS oldest_watermark_age_hours,
+                     (extract(epoch FROM (now() - max(w.updated_at))) / 3600.0)::DECIMAL(12,2) AS hours_since_last_advance
+                FROM public.prg_watermark w
+               GROUP BY w.client
+            ) x WHERE current_user IN ('rpt_internal', 'root')
+        </createView>
+    </changeSet>
+
+    <!-- 2b. v_stuck (spec 11.3 #2, business side) - INTERNAL. Business-DB wedge classes, oldest
+         first. Thresholds are sane literals, NOTED here: STAGED_NOT_WRITTEN uses a 15-minute
+         staged-but-unwritten grace (in-flight writes are not "stuck"); EMISSION_VISIBLE_NO_REPLY
+         uses a 4-hour no-reply threshold (Fintegrate host replies are same-business-day expected,
+         so 4h with zero ISR/SBSR/PBSR is a genuine wedge, not intraday latency). Age is measured
+         against now() at query time. -->
+    <changeSet id="006-v-stuck-rpt" author="dcre" runOnChange="true">
+        <createView schemaName="rpt" viewName="v_stuck" replaceIfExists="true">
+            SELECT * FROM (
+              SELECT 'STAGED_NOT_WRITTEN'::STRING AS wedge_class, c.client::STRING AS client,
+                     c.arrival_id, NULL::STRING AS job_name, c.route_id::STRING AS route,
+                     c.file_name::STRING AS subject, c.created_at AS stuck_since,
+                     (extract(epoch FROM (now() - c.created_at)) / 3600.0)::DECIMAL(12,2) AS age_hours,
+                     (c.outcome || ' staged, written_at IS NULL')::STRING AS detail,
+                     'cir_response'::STRING AS source_table
+                FROM public.cir_response c
+               WHERE c.written_at IS NULL
+                 AND c.created_at &lt; now() - INTERVAL '15 minutes'
+              UNION ALL
+              SELECT 'EMISSION_VISIBLE_NO_REPLY'::STRING,
+                     COALESCE(g.client, split_part(e.file_name, '_', 1))::STRING,
+                     e.arrival_id, NULL::STRING, 'fint-req'::STRING,
+                     e.file_name::STRING, e.visible_at,
+                     (extract(epoch FROM (now() - e.visible_at)) / 3600.0)::DECIMAL(12,2),
+                     'emission visible, no ISR/SBSR/PBSR reply after 4h'::STRING,
+                     'crw_emission'::STRING
+                FROM public.crw_emission e
+                LEFT JOIN public.crw_emission_group g ON g.id = e.group_id
+               WHERE e.visible_at IS NOT NULL
+                 AND e.visible_at &lt; now() - INTERVAL '4 hours'
+                 AND NOT EXISTS (SELECT 1 FROM public.isr_resp r WHERE r.emission_id = e.id)
+                 AND NOT EXISTS (SELECT 1 FROM public.sbsr_resp r WHERE r.emission_id = e.id)
+                 AND NOT EXISTS (SELECT 1 FROM public.pbsr_resp r WHERE r.emission_id = e.id)
+            ) x WHERE current_user IN ('rpt_internal', 'root')
+            ORDER BY stuck_since
+        </createView>
+    </changeSet>
+
+    <!-- LIQUIBASE-SQL-EXCEPTION: GRANT has no typed tag; idempotent. Re-grant ALL rpt tables/views
+         to the four roles (matches 003/004): client roles reach the client-safe views (their rows
+         only, via the session-identity predicate) and the internal views (zero rows, via the
+         current_user IN predicate). The predicate is the tenant boundary, exactly as for v_tx. -->
+    <changeSet id="006-support-view-grants-rpt" author="dcre">
+        <sql>
+            GRANT SELECT ON ALL TABLES IN SCHEMA rpt TO fnbcc01, fnbcc02, fnbrf01, rpt_internal;
+        </sql>
+    </changeSet>
+
+</databaseChangeLog>
