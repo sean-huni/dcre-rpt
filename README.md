@@ -21,9 +21,11 @@ confirmed Fintegrate boundary:
 - Terminal non-success: `RJCT`, `CANC`.
 - Accepted non-terminal: `ACSP`, `ACTC`, `ACCP`, `ACFC`.
 - Pending/interim: `RCVD`, `PDNG`, `PART`, `PATC`.
-- Unsupported by Fintegrate: `ACWC`, `ACWP`.
+- Accepted warehoused (SLA-suppressed): `ACWP` future-dated, `ACWC` auto-bumped per the RMB
+  DebiCheck profile (SCRUM-68; the SLA suppression itself is enforced in prg's `prg_sla_pending`,
+  rpt already treats both as plain non-terminal).
 
-Unsupported and unknown Fintegrate codes remain non-terminal and are never inferred as success or
+Warehoused and unknown Fintegrate codes remain non-terminal and are never inferred as success or
 failure by reporting. In particular, a response code merely beginning with `FAIL` is still unknown;
 early validation failures come only from `ctv_outcome`. Terminal non-success is recognised at the
 deepest available Fintegrate response leg, including an ISR-level `RJCT`.

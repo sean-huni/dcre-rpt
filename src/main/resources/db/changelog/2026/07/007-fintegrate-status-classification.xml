@@ -10,9 +10,10 @@
         terminal success     = ACSC, ACCC
         terminal non-success = RJCT, CANC
         supported interim    = ACCP, ACSP, ACTC, ACFC, RCVD, PDNG, PATC, PART
-        unsupported          = ACWC, ACWP
+        accepted warehoused  = ACWC, ACWP (SCRUM-68: ACWP future-dated, ACWC auto-bumped per the
+                               RMB DebiCheck profile; the SLA suppression is enforced in prg)
 
-      Unsupported and unknown statuses remain non-terminal in reporting. Protocol validation and
+      Warehoused and unknown statuses remain non-terminal in reporting. Protocol validation and
       alerting belong to the response-ingestion boundary; RPT must not infer a terminal outcome.
       Terminal response failures use the deepest available leg (PBSR, then SBSR, then ISR).
       A FAIL-prefixed value is an early terminal failure only when it is the transaction's recorded
