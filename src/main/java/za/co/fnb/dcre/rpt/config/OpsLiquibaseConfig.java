@@ -45,7 +45,7 @@ public class OpsLiquibaseConfig {
     /**
      * Boot 4's LiquibaseAutoConfiguration backs off entirely once ANY user-defined SpringLiquibase
      * bean exists (class-level ConditionalOnMissingBean on its inner LiquibaseConfiguration,
-     * verified against spring-boot-liquibase 4.1.0), so the primary dcre_collections migration is
+     * verified against spring-boot-liquibase 4.1.0), so the primary dcre_col migration is
      * declared explicitly here, wired from the bound {@link LiquibaseProperties} exactly as the
      * auto-configuration would wire it. Every spring.liquibase.* property that LiquibaseProperties
      * exposes on Boot 4.1 is honored: change-log, clear-checksums, contexts, default-schema,
