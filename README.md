@@ -4,11 +4,11 @@ Reporting schema owner for DCRE Collections: Liquibase-managed, session-identity
 
 ## What it does
 
-Owns the `rpt` reporting surface of DCRE Collections (SCRUM-51). It is a one-shot Spring Boot 4.1 / Spring Batch 6 job whose real work happens in its two Liquibase runs: the primary changelog creates the `rpt` schema, the reporting roles and ten client-scoped views inside `dcre_collections`; a secondary Liquibase run creates two internal-only ops views (stage health, SLA) inside `agt_ops`. The Batch step itself is a no-op tasklet: schema ownership lives in the changelogs, and the JVM exit code carries the job verdict (`ExitCodeMain` from platform-batch).
+Owns the `rpt` reporting surface of DCRE Collections (SCRUM-51). It is a one-shot Spring Boot 4.1 / Spring Batch 6 job whose real work happens in its two Liquibase runs: the primary changelog creates the `rpt` schema, the reporting roles and ten client-scoped views inside `dcre_col`; a secondary Liquibase run creates two internal-only ops views (stage health, SLA) inside `agt_ops`. The Batch step itself is a no-op tasklet: schema ownership lives in the changelogs, and the JVM exit code carries the job verdict (`ExitCodeMain` from platform-batch).
 
 Views owned by this module:
 
-- Core (`dcre_collections`, schema `rpt`): `v_tx` (per-transaction status spine), `v_tx_daily`, `v_fails`, `v_reason_daily`, `v_debtor_daily`
+- Core (`dcre_col`, schema `rpt`): `v_tx` (per-transaction status spine), `v_tx_daily`, `v_fails`, `v_reason_daily`, `v_debtor_daily`
 - Extended: `v_funnel_daily`, `v_latency`, `v_recon_daily` (recon R-24), `v_cure`, `v_amount_buckets`
 - Ops (`agt_ops`, schema `rpt`, internal-only): `v_ops_stage_health`, `v_ops_sla`
 
@@ -70,14 +70,14 @@ Bottom line: as long as external client orgs self-serve their own data, `rpt` is
 - **Roles and grants wall**: client roles `fnbcc01`, `fnbcc02`, `fnbrf01` plus `rpt_internal` get USAGE + SELECT on schema `rpt` only; client roles cannot read the `public` OLTP tables. All four roles default `default_transaction_use_follower_reads = 'on'`, so reporting reads are served ~4.8 s stale by design and do not contend with the OLTP pipeline.
 - **12FactorApp Alignment - https://12factor.net/**: config strictly from the environment with committed working defaults (a clean clone runs with no `.env`), stateless one-shot process, CockroachDB as an attached backing resource, dev/prod parity (same CockroachDB engine in tests, compose and kind).
 - **Idempotent restart semantics**: per-service Liquibase history (`rpt_databasechangelog` + lock) in BOTH databases (the only DCRE module with history in both); `replaceIfExists` views and `IF NOT EXISTS` role/grant DDL converge on re-run; `StaleExecutionSweeper` abandons stale `RPT_BATCH_` executions at startup so a killed pod never blocks a same-identity relaunch.
-- **Boot 4 Liquibase note**: `LiquibaseAutoConfiguration` backs off entirely once any user-defined `SpringLiquibase` bean exists, so `OpsLiquibaseConfig` declares the primary `dcre_collections` migration explicitly (wired from `LiquibaseProperties`) alongside the secondary `agt_ops` migration, which uses a deliberately non-pooling `SimpleDriverDataSource`.
+- **Boot 4 Liquibase note**: `LiquibaseAutoConfiguration` backs off entirely once any user-defined `SpringLiquibase` bean exists, so `OpsLiquibaseConfig` declares the primary `dcre_col` migration explicitly (wired from `LiquibaseProperties`) alongside the secondary `agt_ops` migration, which uses a deliberately non-pooling `SimpleDriverDataSource`.
 
 ## Prerequisites
 
 - JDK 25 (Gradle toolchain; wrapper 9.5.1 committed)
 - Docker (Testcontainers and image builds)
 - Platform libs in mavenLocal: `za.co.fnb.dcre:platform-persistence:0.1.0` and `za.co.fnb.dcre:platform-batch:0.1.0`
-- A CockroachDB with the `dcre_collections` and `agt_ops` databases (the dcre-infra compose and kind bootstraps create both)
+- A CockroachDB with the `dcre_col` and `agt_ops` databases (the dcre-infra compose and kind bootstraps create both)
 
 ## Quickstart
 
@@ -88,7 +88,7 @@ Clean clone, no `.env`: the committed defaults target the dcre-infra compose CRD
 (cd ../platform-persistence && ./gradlew publishToMavenLocal)
 (cd ../platform-batch && ./gradlew publishToMavenLocal)
 
-# backing DB (compose inner loop; init creates dcre_collections + agt_ops)
+# backing DB (compose inner loop; init creates dcre_col + agt_ops)
 (cd ../../../../../infra/dcre-infra && docker compose up -d)
 
 # apply both changelogs, run the no-op job, exit with the Batch exit code
@@ -101,7 +101,7 @@ Ordering matters: run rpt only after AGT and the stage services have applied the
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `DCRE_DB_URL` | `jdbc:postgresql://localhost:26257/dcre_collections?sslmode=disable` | Primary datasource: OLTP database where the `rpt` schema, roles and client views are created |
+| `DCRE_DB_URL` | `jdbc:postgresql://localhost:26257/dcre_col?sslmode=disable` | Primary datasource: OLTP database where the `rpt` schema, roles and client views are created |
 | `DCRE_DB_USER` | `root` | DB user (also used for the `agt_ops` migration connection) |
 | `DCRE_DB_PASSWORD` | (empty) | DB password |
 | `DCRE_RPT_OPS_DB_URL` | `jdbc:postgresql://localhost:26257/agt_ops?sslmode=disable` | Target of the secondary ops-views Liquibase run |
@@ -128,7 +128,7 @@ Against the kind cluster `dcre-dev`, port-forward CRDB and override the two URLs
 
 ```zsh
 (cd ../../../../../infra/dcre-infra && scripts/crdb-forward.sh)
-DCRE_DB_URL='jdbc:postgresql://localhost:26258/dcre_collections?sslmode=disable' \
+DCRE_DB_URL='jdbc:postgresql://localhost:26258/dcre_col?sslmode=disable' \
 DCRE_RPT_OPS_DB_URL='jdbc:postgresql://localhost:26258/agt_ops?sslmode=disable' \
 ./gradlew bootRun
 ```
