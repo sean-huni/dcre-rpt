@@ -18,7 +18,7 @@ spring:
     database-change-log-lock-table: rpt_databasechangeloglock
 
 dcre:
-  exchange-root: ${DCRE_EXCHANGE_ROOT:../../../../../infra/dcre-infra/exchange}
+  exchange-root: ${DCRE_EXCHANGE_ROOT:../../../../../../infra/dcre-infra/exchange}
   rpt:
     # agt_ops ops-views changelog target (secondary Liquibase, Task 6)
     ops-db-url: ${DCRE_RPT_OPS_DB_URL:jdbc:postgresql://localhost:26257/agt_ops?sslmode=disable}
