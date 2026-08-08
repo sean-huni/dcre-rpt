@@ -1,0 +1,213 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!--
+      Core collections read model. Version 1: these are the ONLY definitions of these views. The
+      earlier e2e-only spine and the 007 append-only correction that replaced it are gone, because
+      no database carries the intermediate state any more.
+
+      Every base table below is owned by a collections service in dcre_col: tx_header/tx_entry by
+      CRR, validation_log by CTV, crw_emission[_member] by CRW, {isr,sbsr,pbsr}_resp by CIX/CSX/CPX.
+      There is no lane discriminator and there must not be one: with one database per family every
+      row in dcre_col IS a collection, which is exactly why tx_header.flow is being deleted.
+
+      Fintegrate status classification (the reporting authority for the confirmed boundary):
+        terminal success     = ACSC, ACCC
+        terminal non-success = RJCT, CANC
+        supported interim    = ACCP, ACSP, ACTC, ACFC, RCVD, PDNG, PATC, PART
+        accepted warehoused  = ACWC, ACWP (SCRUM-68: ACWP future-dated, ACWC auto-bumped per the
+                               RMB DebiCheck profile; the SLA suppression is enforced in crg)
+      Warehoused and unknown statuses remain non-terminal: protocol validation and alerting belong
+      to the response-ingestion boundary, and rpt must never infer a terminal outcome. Terminal
+      response failures use the deepest available leg (PBSR, then SBSR, then ISR). A FAIL-prefixed
+      value is an early terminal failure only when it is the transaction's recorded CTV outcome; an
+      external code such as FAILX stays unresolved and non-terminal.
+
+      Response identity is fail-closed and uses the same batch identity rules as CRG's
+      ext_tx_status: resolved rows bind by (emission_id, e2e), legacy NULL-emission rows bind ONLY
+      via crw_emission.outbound_msg_id = orgnl_msg_id, and rows carrying neither identity are
+      unattributable and excluded. A member's CURRENT emission is the latest
+      (run_date, batch_ordinal) per (arrival_id, sequence, e2e), because cross-run_date re-emission
+      stores one crw_emission row per run.
+    -->
+
+    <changeSet id="003-v-tx-rpt" author="dcre">
+        <createView schemaName="rpt" viewName="v_tx" replaceIfExists="true">
+            WITH tx_base AS (
+                    SELECT h.client_token AS client,
+                           (substr(h.business_date,1,4)||'-'||substr(h.business_date,5,2)||'-'||substr(h.business_date,7,2))::DATE AS process_date,
+                           t.arrival_id, t.sequence, t.e2e,
+                           t.debtor_account, t.debtor_name, t.creditor_account, t.currency, t.amount,
+                           v.outcome AS ctv_outcome, v.detail AS ctv_detail,
+                           v.created_at AS validated_at, h.created_at AS ingested_at,
+                           row_number() OVER (PARTITION BY h.client_token, t.e2e
+                                              ORDER BY h.created_at, t.arrival_id, t.sequence) > 1 AS is_resubmission
+                    FROM public.tx_entry t
+                    JOIN public.tx_header h ON h.arrival_id = t.arrival_id
+                    LEFT JOIN public.validation_log v
+                           ON v.arrival_id = t.arrival_id AND v.sequence = t.sequence
+            ),
+            member_emission AS (
+                    SELECT DISTINCT ON (e.arrival_id, m.sequence, m.e2e)
+                           e.arrival_id, m.sequence, m.e2e, e.id AS emission_id
+                    FROM public.crw_emission_member m
+                    JOIN public.crw_emission e ON e.id = m.emission_id
+                    ORDER BY e.arrival_id, m.sequence, m.e2e, e.run_date DESC, e.batch_ordinal DESC
+            ),
+            isr_pick AS (
+                    SELECT u.emission_id, u.e2e, u.status, u.reason, u.created_at
+                    FROM (SELECT c.emission_id, c.e2e, c.status, c.reason, c.created_at,
+                                 row_number() OVER (PARTITION BY c.emission_id, c.e2e
+                                                    ORDER BY c.resolved DESC, c.created_at DESC,
+                                                             c.response_file DESC) AS pick_rank
+                          FROM (SELECT r.emission_id, r.e2e, r.status, r.reason, true AS resolved,
+                                       r.created_at, r.response_file
+                                FROM public.isr_resp r WHERE r.emission_id IS NOT NULL
+                                UNION ALL
+                                SELECT em.id, r.e2e, r.status, r.reason, false,
+                                       r.created_at, r.response_file
+                                FROM public.isr_resp r
+                                JOIN public.crw_emission em ON em.outbound_msg_id = r.orgnl_msg_id
+                                WHERE r.emission_id IS NULL) c) u
+                    WHERE u.pick_rank = 1
+            ),
+            sbsr_pick AS (
+                    SELECT u.emission_id, u.e2e, u.status, u.reason, u.created_at
+                    FROM (SELECT c.emission_id, c.e2e, c.status, c.reason, c.created_at,
+                                 row_number() OVER (PARTITION BY c.emission_id, c.e2e
+                                                    ORDER BY c.resolved DESC, c.created_at DESC,
+                                                             c.response_file DESC) AS pick_rank
+                          FROM (SELECT r.emission_id, r.e2e, r.status, r.reason, true AS resolved,
+                                       r.created_at, r.response_file
+                                FROM public.sbsr_resp r WHERE r.emission_id IS NOT NULL
+                                UNION ALL
+                                SELECT em.id, r.e2e, r.status, r.reason, false,
+                                       r.created_at, r.response_file
+                                FROM public.sbsr_resp r
+                                JOIN public.crw_emission em ON em.outbound_msg_id = r.orgnl_msg_id
+                                WHERE r.emission_id IS NULL) c) u
+                    WHERE u.pick_rank = 1
+            ),
+            pbsr_pick AS (
+                    SELECT u.emission_id, u.e2e, u.status, u.reason, u.created_at
+                    FROM (SELECT c.emission_id, c.e2e, c.status, c.reason, c.created_at,
+                                 row_number() OVER (PARTITION BY c.emission_id, c.e2e
+                                                    ORDER BY c.resolved DESC, c.created_at DESC,
+                                                             c.response_file DESC) AS pick_rank
+                          FROM (SELECT r.emission_id, r.e2e, r.status, r.reason, true AS resolved,
+                                       r.created_at, r.response_file
+                                FROM public.pbsr_resp r WHERE r.emission_id IS NOT NULL
+                                UNION ALL
+                                SELECT em.id, r.e2e, r.status, r.reason, false,
+                                       r.created_at, r.response_file
+                                FROM public.pbsr_resp r
+                                JOIN public.crw_emission em ON em.outbound_msg_id = r.orgnl_msg_id
+                                WHERE r.emission_id IS NULL) c) u
+                    WHERE u.pick_rank = 1
+            )
+            SELECT x.client, x.process_date, x.arrival_id, x.sequence, x.e2e,
+                   x.debtor_account, x.debtor_name, x.creditor_account, x.currency, x.amount,
+                   COALESCE(pp.status, sp.status, ip.status,
+                            CASE WHEN x.ctv_outcome = 'PASS' THEN 'CTV_PASS' ELSE x.ctv_outcome END) AS status,
+                   x.ctv_outcome, x.ctv_detail, x.validated_at,
+                   pp.status::VARCHAR(8) AS pbsr_status,
+                   pp.reason::VARCHAR(8) AS pbsr_reason,
+                   x.ingested_at, pp.created_at AS settled_at,
+                   CASE WHEN pp.status IS NOT NULL THEN 'PBSR'
+                        WHEN sp.status IS NOT NULL THEN 'SBSR'
+                        WHEN ip.status IS NOT NULL THEN 'ISR' END AS resp_stage,
+                   CASE WHEN pp.status IS NOT NULL THEN pp.reason
+                        WHEN sp.status IS NOT NULL THEN sp.reason
+                        ELSE ip.reason END AS resp_reason,
+                   CASE WHEN pp.status IS NOT NULL THEN pp.created_at
+                        WHEN sp.status IS NOT NULL THEN sp.created_at
+                        ELSE ip.created_at END AS resp_detected_at,
+                   me.emission_id IS NOT NULL AS emitted, x.is_resubmission
+            FROM tx_base x
+            LEFT JOIN member_emission me
+                   ON me.arrival_id = x.arrival_id AND me.sequence = x.sequence AND me.e2e = x.e2e
+            LEFT JOIN isr_pick ip ON ip.emission_id = me.emission_id AND ip.e2e = x.e2e
+            LEFT JOIN sbsr_pick sp ON sp.emission_id = me.emission_id AND sp.e2e = x.e2e
+            LEFT JOIN pbsr_pick pp ON pp.emission_id = me.emission_id AND pp.e2e = x.e2e
+            WHERE x.client = upper(current_user::STRING) OR current_user = 'rpt_internal'
+        </createView>
+    </changeSet>
+
+    <changeSet id="003-v-tx-daily-rpt" author="dcre">
+        <createView schemaName="rpt" viewName="v_tx_daily" replaceIfExists="true">
+            SELECT client, process_date,
+                   count(*) AS tx_count,
+                   sum(amount) AS total_amount,
+                   count(*) FILTER (WHERE status IN ('ACSC', 'ACCC')) AS settled_count,
+                   COALESCE(sum(amount) FILTER (WHERE status IN ('ACSC', 'ACCC')), 0) AS settled_amount,
+                   count(*) FILTER (WHERE status IN ('RJCT', 'CANC')) AS rejected_late_count,
+                   COALESCE(sum(amount) FILTER (WHERE status IN ('RJCT', 'CANC')), 0) AS rejected_late_amount,
+                   count(*) FILTER (WHERE ctv_outcome LIKE 'FAIL%') AS rejected_early_count,
+                   COALESCE(sum(amount) FILTER (WHERE ctv_outcome LIKE 'FAIL%'), 0) AS rejected_early_amount,
+                   count(*) FILTER (WHERE is_resubmission) AS resubmission_count,
+                   percentile_cont(0.5) WITHIN GROUP (ORDER BY amount::FLOAT8)::DECIMAL(18,2) AS p50_amount,
+                   percentile_cont(0.95) WITHIN GROUP (ORDER BY amount::FLOAT8)::DECIMAL(18,2) AS p95_amount,
+                   stddev(amount) AS stddev_amount
+            FROM rpt.v_tx
+            WHERE client = upper(current_user::STRING) OR current_user = 'rpt_internal'
+            GROUP BY client, process_date
+        </createView>
+    </changeSet>
+
+    <!-- Consumes v_tx's winning-leg columns (resp_stage/resp_reason/resp_detected_at all come from
+         the SAME response leg picked once in the spine) rather than re-inlining the correlation
+         CTEs. Nested-view composition does NOT inherit the tenant boundary for the
+         verifyViewPredicates gate, so every arm carries its own session-identity predicate. -->
+    <changeSet id="003-v-fails-rpt" author="dcre">
+        <createView schemaName="rpt" viewName="v_fails" replaceIfExists="true">
+            SELECT client, process_date, 'CTV' AS stage, ctv_outcome AS reason,
+                   e2e, debtor_account, amount,
+                   ingested_at AS submitted_at, validated_at AS detected_at
+            FROM rpt.v_tx
+            WHERE ctv_outcome LIKE 'FAIL%'
+              AND (client = upper(current_user::STRING) OR current_user = 'rpt_internal')
+            UNION ALL
+            SELECT client, process_date, resp_stage AS stage, resp_reason AS reason,
+                   e2e, debtor_account, amount,
+                   ingested_at AS submitted_at, resp_detected_at AS detected_at
+            FROM rpt.v_tx
+            WHERE resp_stage IS NOT NULL AND status IN ('RJCT', 'CANC')
+              AND (client = upper(current_user::STRING) OR current_user = 'rpt_internal')
+        </createView>
+    </changeSet>
+
+    <changeSet id="003-v-reason-daily-rpt" author="dcre">
+        <createView schemaName="rpt" viewName="v_reason_daily" replaceIfExists="true">
+            SELECT client, process_date, stage, reason,
+                   count(*) AS fail_count, sum(amount) AS fail_amount
+            FROM rpt.v_fails
+            WHERE client = upper(current_user::STRING) OR current_user = 'rpt_internal'
+            GROUP BY client, process_date, stage, reason
+        </createView>
+    </changeSet>
+
+    <changeSet id="003-v-debtor-daily-rpt" author="dcre">
+        <createView schemaName="rpt" viewName="v_debtor_daily" replaceIfExists="true">
+            SELECT client, debtor_account, process_date,
+                   count(*) AS tx_count, sum(amount) AS total_amount,
+                   count(*) FILTER (WHERE status IN ('ACSC', 'ACCC')) AS settled_count,
+                   count(*) FILTER (WHERE status IN ('RJCT', 'CANC') OR ctv_outcome LIKE 'FAIL%') AS failed_count,
+                   COALESCE(sum(amount) FILTER (WHERE status IN ('RJCT', 'CANC') OR ctv_outcome LIKE 'FAIL%'), 0) AS failed_amount
+            FROM rpt.v_tx
+            WHERE client = upper(current_user::STRING) OR current_user = 'rpt_internal'
+            GROUP BY client, debtor_account, process_date
+        </createView>
+    </changeSet>
+
+    <!-- LIQUIBASE-SQL-EXCEPTION: GRANT has no typed Liquibase tag; idempotent. -->
+    <changeSet id="003-view-grants-rpt" author="dcre">
+        <sql>
+            GRANT SELECT ON ALL TABLES IN SCHEMA rpt TO fnbcc01, fnbcc02, fnbrf01, rpt_internal;
+        </sql>
+    </changeSet>
+
+</databaseChangeLog>

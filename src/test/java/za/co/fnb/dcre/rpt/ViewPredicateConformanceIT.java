@@ -53,7 +53,7 @@ class ViewPredicateConformanceIT {
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", RptJobTest.CRDB::getJdbcUrl);
+        registry.add("spring.datasource.url", RptJobTest::businessDbUrl);
         registry.add("spring.datasource.username", RptJobTest.CRDB::getUsername);
         registry.add("spring.datasource.password", RptJobTest.CRDB::getPassword);
         registry.add("dcre.rpt.ops-db-url", RptJobTest::opsDbUrl);
@@ -63,7 +63,7 @@ class ViewPredicateConformanceIT {
     private Map<String, String> rptViewDefinitions() throws SQLException {
         Map<String, String> defs = new LinkedHashMap<>();
         try (Connection root = DriverManager.getConnection(
-                RptJobTest.CRDB.getJdbcUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword());
+                RptJobTest.businessDbUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword());
              Statement s = root.createStatement();
              ResultSet rs = s.executeQuery(
                      "SELECT table_name, view_definition FROM information_schema.views "
@@ -143,7 +143,7 @@ class ViewPredicateConformanceIT {
     private void seedCrossClientData() throws SQLException {
         final String arrival = "cccccccc-0000-0000-0000-000000000001";
         try (Connection root = DriverManager.getConnection(
-                RptJobTest.CRDB.getJdbcUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword());
+                RptJobTest.businessDbUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword());
              Statement s = root.createStatement()) {
             s.execute("DELETE FROM public.rpt_run; DELETE FROM public.prg_watermark;"
                     + "DELETE FROM public.cir_response; DELETE FROM public.crw_emission_group;"

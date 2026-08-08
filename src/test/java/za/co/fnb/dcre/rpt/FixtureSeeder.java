@@ -39,10 +39,10 @@ public final class FixtureSeeder {
               detail VARCHAR(256),
               created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
               UNIQUE (arrival_id, sequence))""");
-        // response_file is VARCHAR(512) here to mirror the ixr/sxr/pxr 128->512 widening
+        // response_file is VARCHAR(512) here to mirror the cix/csx/cpx 128->512 widening
         // (SCRUM-58 Tasks 7-9): the file-trace width-conformance IT asserts >= 512 on every
         // externally-received name column the views surface. emission_id is the crw_emission FK
-        // added by prg 003-reporting / {ixr,sxr,pxr} 003-emission-fk that the reply view arms join on.
+        // added by crg 003-reporting / {cix,csx,cpx} 003-emission-fk that the reply view arms join on.
         jdbc.execute("""
             CREATE TABLE IF NOT EXISTS public.pbsr_resp (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -91,9 +91,26 @@ public final class FixtureSeeder {
               amount DECIMAL(18,2) NOT NULL,
               created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
               UNIQUE (emission_id, sequence))""");
-        // prg_report base (prg 003-reporting) WITHOUT job_name: the file-trace changelog's
-        // MARK_RAN addColumn pre-create (byte-matching prg 004) adds job_name at migration time,
-        // exercising the bootstrap-order guard exactly as on a rpt-runs-first cluster.
+        // cir_response (cir 2026/07/003-cir-response.xml). CIR's table, and rpt no longer ships a
+        // pre-create for it, so the fixture stands in for the owner exactly as it does for
+        // tx_header and crw_emission. That IS the test of the boundary change: if rpt still
+        // created it, this DDL would be dead and the view would be proving the wrong thing.
+        jdbc.execute("""
+            CREATE TABLE IF NOT EXISTS public.cir_response (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              arrival_id UUID NOT NULL UNIQUE,
+              client VARCHAR(16) NOT NULL,
+              msg_id VARCHAR(64) NOT NULL,
+              route_id VARCHAR(64) NOT NULL,
+              outcome VARCHAR(4) NOT NULL,
+              file_name VARCHAR(512) NOT NULL UNIQUE,
+              reason VARCHAR(64),
+              accepted_count INT,
+              total_count INT,
+              written_at TIMESTAMPTZ,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now())""");
+        // prg_report (crg 003-reporting + 004-crg-report-jobname). CRG kept the prg_* TABLE names
+        // when the SERVICE was renamed, so job_name lands on prg_report, not crg_report.
         jdbc.execute("""
             CREATE TABLE IF NOT EXISTS public.prg_report (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -103,11 +120,11 @@ public final class FixtureSeeder {
               window_key VARCHAR(64) NOT NULL DEFAULT 'W',
               parent_source_msg_id VARCHAR(35),
               file_name VARCHAR(128) NOT NULL,
+              job_name VARCHAR(63),
               created_at TIMESTAMPTZ NOT NULL DEFAULT now())""");
-        // prg_watermark (prg 001-prg.xml 003-prg-watermark-prg): per-client delta watermark keyed
-        // (client, e2e). Pre-dates SCRUM-58, so the support views treat it as assumed-present owner
-        // reality (like crw_emission / prg_report), NOT a MARK_RAN pre-create. Seeded here so the
-        // v_psr_watermark_lag CREATE VIEW resolves its dependency on a fresh test container.
+        // prg_watermark (crg 001-crg.xml): CRG's table, and it kept its prg_ name through the
+        // PRG-to-CRG service rename. Keyed (client, e2e). Seeded here as owner reality, like every
+        // other foreign table in this fixture, so v_psr_watermark_lag resolves its dependency.
         jdbc.execute("""
             CREATE TABLE IF NOT EXISTS public.prg_watermark (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -121,12 +138,14 @@ public final class FixtureSeeder {
     }
 
     /**
-     * agt_ops operational shapes (Task 6 brief), applied to the agt_ops database. Extended for
-     * SCRUM-58 file trace: file_arrival gains physical_filename (VARCHAR(512), owner width, the
-     * external inbound name the ops index surfaces) + quarantine_reason; launch_intent gains
-     * job_name (the outcome-seam name) + attempt; stage_outcome gains exit_code (agt 001 owner
-     * column). duplicate_delivery is deliberately NOT created here: the file-trace ops changelog
-     * MARK_RAN pre-creates it (byte-matching agt 006), so the pre-create actually runs.
+     * AGT's operational shapes, applied to the agt_ops database. Every table here belongs to AGT;
+     * this fixture stands in for it exactly as the OLTP one stands in for the collections owners.
+     *
+     * <p>file_arrival carries physical_filename (VARCHAR(512), owner width, the external inbound name
+     * the ops index surfaces) + quarantine_reason; launch_intent carries job_name (the outcome-seam
+     * name) + attempt; stage_outcome carries exit_code. duplicate_delivery is created here too:
+     * rpt no longer pre-creates AGT's table, so the fixture stands in for AGT, which is what the
+     * ops views meet on a real cluster.
      */
     public static void createOpsTables(JdbcTemplate jdbc) {
         jdbc.execute("""
@@ -150,6 +169,18 @@ public final class FixtureSeeder {
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
               intent_id UUID NOT NULL, outcome VARCHAR(32) NOT NULL, exit_code INT8,
               observed_at TIMESTAMPTZ NOT NULL DEFAULT now(), attempt INT8 NOT NULL DEFAULT 0)""");
+        // duplicate_delivery (agt 2026/07/006-duplicate-delivery.xml). AGT's table.
+        jdbc.execute("""
+            CREATE TABLE IF NOT EXISTS public.duplicate_delivery (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              claim_id UUID NOT NULL UNIQUE,
+              original_arrival_id UUID NOT NULL REFERENCES public.file_arrival(id),
+              route_id VARCHAR(64) NOT NULL,
+              client_token VARCHAR(64) NOT NULL,
+              physical_filename VARCHAR(512) NOT NULL,
+              payload_sha256 VARCHAR(64) NOT NULL,
+              sunk_path VARCHAR(1024) NOT NULL,
+              observed_at TIMESTAMPTZ NOT NULL DEFAULT now())""");
     }
 
     public static void seed(JdbcTemplate jdbc) {

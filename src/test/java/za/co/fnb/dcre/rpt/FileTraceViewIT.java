@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -43,7 +44,7 @@ class FileTraceViewIT {
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", RptJobTest.CRDB::getJdbcUrl);
+        registry.add("spring.datasource.url", RptJobTest::businessDbUrl);
         registry.add("spring.datasource.username", RptJobTest.CRDB::getUsername);
         registry.add("spring.datasource.password", RptJobTest.CRDB::getPassword);
         registry.add("dcre.rpt.ops-db-url", RptJobTest::opsDbUrl);
@@ -57,7 +58,7 @@ class FileTraceViewIT {
 
     private void seedBusiness() throws SQLException {
         try (Connection root = DriverManager.getConnection(
-                RptJobTest.CRDB.getJdbcUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword());
+                RptJobTest.businessDbUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword());
              Statement s = root.createStatement()) {
             s.execute("DELETE FROM public.rpt_run; DELETE FROM public.prg_report;"
                     + "DELETE FROM public.cir_response; DELETE FROM public.pbsr_resp;"
@@ -99,7 +100,7 @@ class FileTraceViewIT {
             s.execute("""
                 INSERT INTO public.prg_report (client, report_type, trigger_kind, window_key, parent_source_msg_id,
                                                file_name, job_name, created_at)
-                VALUES ('FNBCC01','PSR','SCHEDULED','W1','MSGP1','FNBCC01_PSR_20260701.txt','local-prg-501',
+                VALUES ('FNBCC01','PSR','SCHEDULED','W1','MSGP1','FNBCC01_PSR_20260701.txt','local-crg-501',
                         '2026-07-01T16:00:00Z')""");
             s.execute("""
                 INSERT INTO public.rpt_run (job_name, outcome, created_at)
@@ -205,7 +206,7 @@ class FileTraceViewIT {
             assertEquals("PSR", psr.get("kind"));
             assertEquals("OUTBOUND", psr.get("direction"));
             assertEquals("onhost-resp", psr.get("route"));
-            assertEquals("local-prg-501", psr.get("job_name"));
+            assertEquals("local-crg-501", psr.get("job_name"));
             assertEquals(A1, psr.get("arrival_id"), "PSR binds to arrival via group.source_msg_id = parent_source_msg_id");
 
             Map<String, String> seam = indexRow(c, "rpt.v_file_index", "local-rpt-777");
@@ -222,9 +223,15 @@ class FileTraceViewIT {
     void flowViewsSurfaceOrderedStepsWithTrueTimeKind() throws Exception {
         try (Connection c = RptSecurityIT.forRole("rpt_internal")) {
             Map<String, String> steps = flowSteps(c, "rpt.v_flow_trace", A1);
+            // Step labels name the SERVICE that produced the row, so they follow R-49: the
+            // collections response readers are CIX/CSX/CPX (was IXR/SXR/PXR) and the collections
+            // report generator is CRG (was PRG, a name that now belongs to the PAYMENTS generator).
             for (String step : List.of("CRR_INGESTED", "CTV_VALIDATED", "CIR_RESP_STAGED", "CIR_RESP_WRITTEN",
-                    "CRW_PLANNED", "CRW_VISIBLE", "IXR_REPLY", "SXR_REPLY", "PXR_REPLY", "PRG_REPORTED")) {
+                    "CRW_PLANNED", "CRW_VISIBLE", "CIX_REPLY", "CSX_REPLY", "CPX_REPLY", "CRG_REPORTED")) {
                 assertTrue(steps.containsKey(step), "business flow missing " + step);
+            }
+            for (String retired : List.of("IXR_REPLY", "SXR_REPLY", "PXR_REPLY", "PRG_REPORTED")) {
+                assertFalse(steps.containsKey(retired), "retired stage label still emitted: " + retired);
             }
             assertEquals("VISIBLE_AT", steps.get("CRW_VISIBLE"), "time_kind is the timestamp's true meaning");
             assertEquals("WRITTEN_AT", steps.get("CIR_RESP_WRITTEN"));
@@ -245,7 +252,7 @@ class FileTraceViewIT {
     @Test
     void preCreatedGuardTablesByteMatchOwnerDdl() throws Exception {
         try (Connection biz = DriverManager.getConnection(
-                RptJobTest.CRDB.getJdbcUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword())) {
+                RptJobTest.businessDbUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword())) {
             assertEquals(Set.of("id", "arrival_id", "client", "msg_id", "route_id", "outcome", "file_name",
                             "reason", "accepted_count", "total_count", "written_at", "created_at"),
                     columns(biz, "cir_response"), "cir_response column set (cir 003)");
@@ -262,7 +269,7 @@ class FileTraceViewIT {
             assertEquals(32, charLen(biz, "rpt_run", "outcome"));
 
             assertTrue(columns(biz, "prg_report").contains("job_name"),
-                    "prg_report.job_name added by the MARK_RAN addColumn pre-create (prg 004)");
+                    "prg_report.job_name comes from its OWNER, crg 004-crg-report-jobname; rpt no longer\n                            + ships a pre-create for another service's column");
             assertEquals(63, charLen(biz, "prg_report", "job_name"));
         }
         try (Connection ops = DriverManager.getConnection(
@@ -283,7 +290,7 @@ class FileTraceViewIT {
     @Test
     void externallyReceivedNameColumnsAreAtLeast512() throws Exception {
         try (Connection biz = DriverManager.getConnection(
-                RptJobTest.CRDB.getJdbcUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword())) {
+                RptJobTest.businessDbUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword())) {
             for (String t : List.of("isr_resp", "sbsr_resp", "pbsr_resp")) {
                 assertTrue(charLen(biz, t, "response_file") >= 512, t + ".response_file must be >= 512 post-widening");
             }
@@ -336,7 +343,7 @@ class FileTraceViewIT {
         final String af1 = "aaaaaaaa-0000-0000-0000-000000000001"; // earlier run_date arrival
         final String af2 = "aaaaaaaa-0000-0000-0000-000000000002"; // later  run_date arrival (the live one)
         try (Connection root = DriverManager.getConnection(
-                RptJobTest.CRDB.getJdbcUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword());
+                RptJobTest.businessDbUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword());
              Statement s = root.createStatement()) {
             s.execute("""
                 INSERT INTO public.crw_emission_group (id, arrival_id, client, source_msg_id, run_date) VALUES
@@ -346,7 +353,7 @@ class FileTraceViewIT {
             s.execute("""
                 INSERT INTO public.prg_report (client, report_type, trigger_kind, window_key, parent_source_msg_id,
                                                file_name, job_name, created_at)
-                VALUES ('FNBCC01','PSR','SCHEDULED','WFAN','MSGFAN','FNBCC01_PSR_FANOUT.txt','local-prg-777',
+                VALUES ('FNBCC01','PSR','SCHEDULED','WFAN','MSGFAN','FNBCC01_PSR_FANOUT.txt','local-crg-777',
                         '2026-07-02T16:00:00Z')""");
         }
         try (Connection c = RptSecurityIT.forRole("rpt_internal")) {
@@ -357,9 +364,9 @@ class FileTraceViewIT {
             assertEquals(af2, psr.get("related_arrival_id"),
                     "PSR binds to the latest-run_date group, not a cross-run_date fan-out");
             assertEquals(af2, psr.get("arrival_id"));
-            // exactly one PRG_REPORTED flow row for that file: one arrival, not one per colliding run_date.
-            assertEquals(1, countFlowStepForFile(c, "rpt.v_flow_trace", "PRG_REPORTED", "FNBCC01_PSR_FANOUT.txt"),
-                    "one PRG_REPORTED flow row per PSR file, not one per colliding run_date");
+            // exactly one CRG_REPORTED flow row for that file: one arrival, not one per colliding run_date.
+            assertEquals(1, countFlowStepForFile(c, "rpt.v_flow_trace", "CRG_REPORTED", "FNBCC01_PSR_FANOUT.txt"),
+                    "one CRG_REPORTED flow row per PSR file, not one per colliding run_date");
         }
     }
 

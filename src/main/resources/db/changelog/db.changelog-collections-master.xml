@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!--
+      THE COLLECTIONS read model, and nothing else. Selected by dcre.rpt.family=collections, which
+      also names the database this master is allowed to run against (dcre_col). Every changeset
+      below reads tables owned by collections/* only. A payments read model, when one is required,
+      arrives as db.changelog-payments-master.xml over dcre_pay's own tables; it never joins to
+      anything here, because a report that spans two families is composed from each family's
+      published read model, never by a query across databases
+      (https://microservices.io/patterns/data/database-per-service.html).
+    -->
+
+    <include file="db/changelog/collections/2026/07/001-rpt-roles.xml"/>
+    <include file="db/changelog/collections/2026/07/002-batch-metadata.xml"/>
+    <include file="db/changelog/collections/2026/07/003-rpt-core-views.xml"/>
+    <include file="db/changelog/collections/2026/07/004-rpt-extended-views.xml"/>
+    <include file="db/changelog/collections/2026/07/005-rpt-run.xml"/>
+    <include file="db/changelog/collections/2026/07/005-file-trace-views.xml"/>
+    <include file="db/changelog/collections/2026/07/006-support-views.xml"/>
+
+</databaseChangeLog>

@@ -1,20 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <databaseChangeLog
-        logicalFilePath="db/changelog/2026/07/005-rpt-run.xml"
         xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
         http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
 
-    <!-- SCRUM-58 file-trace: rpt is a one-shot schema-owner job (its real work is the Liquibase
-         runs), NOT an orchestrated AGT stage, so it captures its own outcome-seam name here.
-         One row per rpt job run, keyed by the seam job_name (K8s Job name, else
-         local-rpt-<executionId>). MARK_RAN tableExists guard keeps the additive create re-run-safe
-         on already-migrated databases (persistence.md changeset-identity rule). -->
+    <!-- rpt_run is the ONE table rpt owns. rpt is a one-shot schema-owner job rather than an
+         orchestrated AGT stage, so it records its own outcome-seam name here: one row per run,
+         keyed by the seam job_name (the K8s Job name, else local-rpt-<executionId>).
+
+         No MARK_RAN tableExists guard. On version 1 the database is empty, rpt is the table's only
+         creator, and a guard for an object that cannot exist would convert a genuine failure
+         (someone else created rpt_run) into a silent skip. -->
     <changeSet id="005-rpt-run" author="dcre">
-        <preConditions onFail="MARK_RAN">
-            <not><tableExists tableName="rpt_run"/></not>
-        </preConditions>
         <createTable tableName="rpt_run">
             <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
                 <constraints primaryKey="true" nullable="false"/>

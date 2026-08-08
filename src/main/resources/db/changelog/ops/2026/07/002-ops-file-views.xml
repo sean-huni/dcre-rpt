@@ -5,59 +5,13 @@
         xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
         http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
 
-    <!-- SCRUM-58 file-trace ops views (spec 1.9), agt_ops database. BOOTSTRAP-ORDER GUARD:
-         v_ops_file_index/v_ops_flow read duplicate_delivery which agt introduces in this same
-         program (2026/07/006-duplicate-delivery.xml), so it is MARK_RAN pre-created here with
-         agt's EXACT column set, types, FK/constraint and index names. On a rpt-runs-first fresh
-         cluster this creates it; where agt ran first the guard MARK_RANs. file_arrival,
-         launch_intent and stage_outcome pre-date this program (assumed present, as on the fleet). -->
+    <!-- File-trace ops views (R-44), agt_ops database.
 
-    <!-- duplicate_delivery (byte-match agt 2026/07/006-duplicate-delivery.xml). -->
-    <changeSet id="002-precreate-duplicate-delivery-rpt" author="dcre">
-        <preConditions onFail="MARK_RAN">
-            <not><tableExists tableName="duplicate_delivery"/></not>
-        </preConditions>
-        <createTable tableName="duplicate_delivery">
-            <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
-                <constraints primaryKey="true" nullable="false"/>
-            </column>
-            <column name="claim_id" type="UUID">
-                <constraints nullable="false"/>
-            </column>
-            <column name="original_arrival_id" type="UUID">
-                <constraints nullable="false"
-                             foreignKeyName="fk_dup_original_arrival"
-                             references="file_arrival(id)"/>
-            </column>
-            <column name="route_id" type="VARCHAR(64)">
-                <constraints nullable="false"/>
-            </column>
-            <column name="client_token" type="VARCHAR(64)">
-                <constraints nullable="false"/>
-            </column>
-            <column name="physical_filename" type="VARCHAR(512)">
-                <constraints nullable="false"/>
-            </column>
-            <column name="payload_sha256" type="VARCHAR(64)">
-                <constraints nullable="false"/>
-            </column>
-            <column name="sunk_path" type="VARCHAR(1024)">
-                <constraints nullable="false"/>
-            </column>
-            <column name="observed_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="now()">
-                <constraints nullable="false"/>
-            </column>
-        </createTable>
-        <addUniqueConstraint tableName="duplicate_delivery"
-                             columnNames="claim_id"
-                             constraintName="uq_duplicate_delivery_claim"/>
-        <createIndex indexName="ix_dup_filename" tableName="duplicate_delivery">
-            <column name="physical_filename"/>
-        </createIndex>
-        <createIndex indexName="ix_dup_original" tableName="duplicate_delivery">
-            <column name="original_arrival_id"/>
-        </createIndex>
-    </changeSet>
+         rpt SHIPS NO DDL FOR A TABLE IT DOES NOT OWN. The bootstrap-order guard that pre-created
+         duplicate_delivery here, byte-matching agt's own changeset, is gone: every table read
+         below (file_arrival, launch_intent, stage_outcome, duplicate_delivery) is AGT's, and a
+         second creator of a table is a second definition of its shape with nothing to say which
+         is current. rpt runs after AGT has migrated, which the README states as the run order. -->
 
     <!-- v_ops_file_index: inbound copybooks / fint replies / quarantines from file_arrival,
          duplicate re-deliveries from duplicate_delivery (related_arrival_id -> the original),

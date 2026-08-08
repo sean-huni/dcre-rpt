@@ -20,7 +20,7 @@ class RptIsolationIT extends OltpPreseededTestBase {
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", RptJobTest.CRDB::getJdbcUrl);
+        registry.add("spring.datasource.url", RptJobTest::businessDbUrl);
         registry.add("spring.datasource.username", RptJobTest.CRDB::getUsername);
         registry.add("spring.datasource.password", RptJobTest.CRDB::getPassword);
         registry.add("dcre.rpt.ops-db-url", RptJobTest::opsDbUrl);

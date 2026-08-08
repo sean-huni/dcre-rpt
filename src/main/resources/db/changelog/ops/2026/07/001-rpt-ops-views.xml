@@ -5,10 +5,13 @@
         xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
         http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
 
-    <!-- LIQUIBASE-SQL-EXCEPTION: schema/role/grant DDL has no typed tags; idempotent. -->
+    <!-- LIQUIBASE-SQL-EXCEPTION: schema/role/grant DDL has no typed tags.
+         CREATE SCHEMA is bare: schemas are per-database and on version 1 agt_ops has none.
+         CREATE ROLE keeps IF NOT EXISTS because CockroachDB roles are CLUSTER-scoped, so
+         rpt_internal is legitimately already present if the dcre_col changelog ran first. -->
     <changeSet id="001-rpt-ops-schema-rpt" author="dcre">
         <sql>
-            CREATE SCHEMA IF NOT EXISTS rpt;
+            CREATE SCHEMA rpt;
             CREATE ROLE IF NOT EXISTS rpt_internal LOGIN;
             GRANT USAGE ON SCHEMA rpt TO rpt_internal;
         </sql>

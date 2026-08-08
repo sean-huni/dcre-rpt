@@ -14,6 +14,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.CockroachContainer;
 import org.testcontainers.utility.DockerImageName;
+import za.co.fnb.dcre.rpt.domain.Family;
 
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -29,22 +30,31 @@ class RptJobTest {
     static {
         CRDB.start();
         // Every test class references CRDB from its @DynamicPropertySource, so this static block
-        // runs before ANY Spring context boots. The 003 view changesets validate their public.*
-        // dependencies at CREATE time, so the OLTP tables must pre-exist even when a single test
-        // class (this one included) runs in isolation on a fresh container. The same applies to
-        // agt_ops (Task 6): every context runs the secondary opsLiquibase against agt_ops and its
-        // CREATE VIEW changesets validate public.* dependencies there, so database + ops tables
-        // must also pre-exist before the first context boots, whichever test class that is.
+        // runs before ANY Spring context boots. Three things must be true before the first one:
+        //
+        //  1. the BUSINESS database is named dcre_col, not the Testcontainers default. FamilyGuard
+        //     compares current_database() against the declared family's own database, so a suite
+        //     running against the default name would either fail every context or, worse, force
+        //     the guard to be disabled in tests and prove nothing;
+        //  2. the OLTP tables pre-exist, because CockroachDB validates view dependencies at CREATE
+        //     time exactly as it does on the real cluster;
+        //  3. the same holds for agt_ops, which every context migrates through opsLiquibase.
         try (var c = DriverManager.getConnection(CRDB.getJdbcUrl(), CRDB.getUsername(), CRDB.getPassword());
              var s = c.createStatement()) {
+            s.execute("CREATE DATABASE IF NOT EXISTS dcre_col");
             s.execute("CREATE DATABASE IF NOT EXISTS agt_ops");
         } catch (SQLException e) {
             throw new IllegalStateException(e);
         }
         FixtureSeeder.createOltpTables(new JdbcTemplate(
-                new DriverManagerDataSource(CRDB.getJdbcUrl(), CRDB.getUsername(), CRDB.getPassword())));
+                new DriverManagerDataSource(businessDbUrl(), CRDB.getUsername(), CRDB.getPassword())));
         FixtureSeeder.createOpsTables(new JdbcTemplate(
                 new DriverManagerDataSource(opsDbUrl(), CRDB.getUsername(), CRDB.getPassword())));
+    }
+
+    /** Container URL rewritten to dcre_col; the collections family's own database, per Family. */
+    static String businessDbUrl() {
+        return RoleConnections.forDatabase(CRDB, Family.COLLECTIONS.database());
     }
 
     /** Container URL rewritten to the agt_ops database; target of dcre.rpt.ops-db-url in EVERY IT. */
@@ -54,7 +64,7 @@ class RptJobTest {
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", CRDB::getJdbcUrl);
+        registry.add("spring.datasource.url", RptJobTest::businessDbUrl);
         registry.add("spring.datasource.username", CRDB::getUsername);
         registry.add("spring.datasource.password", CRDB::getPassword);
         registry.add("dcre.rpt.ops-db-url", RptJobTest::opsDbUrl);
@@ -71,11 +81,11 @@ class RptJobTest {
         assertEquals(BatchStatus.COMPLETED, run.getStatus());
         Integer changesets = jdbc.queryForObject(
                 "SELECT count(*) FROM rpt_databasechangelog", Integer.class);
-        assertEquals(38, changesets,
-                "roles + batch-metadata + six core-view + six extended-view + rpt-run + six file-trace "
-                        + "(3 pre-create + 2 views + grant) + seven support-view (six views + grant, "
-                        + "incl. the corrected watermark-lag its runOnChange changeset owns) "
-                        + "+ ten Fintegrate status/correlation corrections (nine views + grant) "
-                        + "changesets applied via rpt-prefixed history");
+        assertEquals(25, changesets,
+                "the COLLECTIONS read model, version 1: 1 roles + 1 batch-metadata + 6 core-view "
+                        + "+ 6 extended-view + 1 rpt-run + 3 file-trace (2 views + grant, no "
+                        + "cross-service pre-creates) + 7 support-view (6 views + grant), applied "
+                        + "via rpt-prefixed history. It was 38 while the 007 append-only "
+                        + "corrections and three foreign-table pre-creates still existed.");
     }
 }

@@ -29,7 +29,7 @@ class RptOpsViewsIT {
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", RptJobTest.CRDB::getJdbcUrl);
+        registry.add("spring.datasource.url", RptJobTest::businessDbUrl);
         registry.add("spring.datasource.username", RptJobTest.CRDB::getUsername);
         registry.add("spring.datasource.password", RptJobTest.CRDB::getPassword);
         registry.add("dcre.rpt.ops-db-url", RptJobTest::opsDbUrl);
@@ -106,18 +106,19 @@ class RptOpsViewsIT {
         }
     }
 
-    /** Secondary-history invariant, mirroring the primary 14-count in {@link RptJobTest}. */
+    /** Secondary-history invariant, mirroring the primary 25-count in {@link RptJobTest}. */
     @Test
-    void opsLiquibaseHistoryHoldsExactlyFourChangesets() throws Exception {
+    void opsLiquibaseHistoryHoldsExactlyElevenChangesets() throws Exception {
         try (Connection root = DriverManager.getConnection(
                 RptJobTest.opsDbUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword());
              Statement s = root.createStatement()) {
             ResultSet rs = s.executeQuery("SELECT count(*) FROM rpt_databasechangelog");
             assertTrue(rs.next());
-            assertEquals(12, rs.getInt(1),
-                    "rpt schema + two ops views + grants + file-trace (duplicate_delivery pre-create "
-                            + "+ two ops file views + grant) + four ops support-view (three views + grant) "
-                            + "applied via rpt-prefixed history in agt_ops");
+            assertEquals(11, rs.getInt(1),
+                    "the ORCHESTRATION read model: 4 schema/roles/ops-views + 3 file-trace (2 views "
+                            + "+ grant) + 4 support-view (3 views + grant), applied via rpt-prefixed "
+                            + "history in agt_ops. It was 12 while rpt still pre-created AGT's "
+                            + "duplicate_delivery table.");
         }
     }
 

@@ -25,24 +25,88 @@ dependencies {
 }
 test { useJUnitPlatform() }
 
-// Spec 2026-07-15 client-stats section 6 guard 1: every client-facing view carries the
-// session-identity predicate. Ops changelog views use current_user too, so the scan is uniform.
+// Client-stats guard 1: every client-facing view carries the session-identity predicate.
+// Ops changelog views use current_user too, so the scan is uniform.
 tasks.register('verifyViewPredicates') {
     group = 'verification'
     doLast {
         def offenders = []
+        def scanned = 0
         fileTree('src/main/resources/db/changelog').matching { include '**/*.xml' }.each { f ->
             def text = f.text
             def matcher = text =~ /(?s)<createView[^>]*viewName="([^"]+)"[^>]*>(.*?)<\/createView>/
             matcher.each { full, viewName, body ->
+                scanned++
                 if (!body.contains('current_user')) {
                     offenders << "${f.name}: ${viewName}"
                 }
             }
         }
+        // A sweep that finds nothing must be distinguishable from a sweep that did not run.
+        if (scanned == 0) {
+            throw new GradleException('verifyViewPredicates matched 0 views: the scan is broken, not clean')
+        }
         if (!offenders.isEmpty()) {
             throw new GradleException("Views missing session-identity predicate: ${offenders}")
         }
+        logger.lifecycle("verifyViewPredicates: ${scanned} view definitions, 0 missing the predicate")
     }
 }
-check.dependsOn 'verifyViewPredicates'
+
+// SCRUM-107 boundary gate. Two failures this catches, both of which shipped green once:
+//   1. a changelog reading a table belonging to another FAMILY, which is how collections
+//      reporting silently aggregated payments while dcre_col held both lanes;
+//   2. rpt shipping CREATE DDL for a table it does not own, which makes it a second definition
+//      of somebody else's schema with nothing to say which copy is current.
+// The allowlists below are ownership facts, checked against the owners' changelogs on 2026-08-08.
+ext.ownedByRpt = ['rpt_run'] as Set
+ext.readableInCollections = [
+        // CRR spine, CTV validation, CRW emission, CIX/CSX/CPX responses, CIR reply, CRG reporting.
+        'tx_header', 'tx_entry', 'validation_log',
+        'crw_emission', 'crw_emission_group', 'crw_emission_member',
+        'isr_resp', 'sbsr_resp', 'pbsr_resp',
+        'cir_response', 'prg_report', 'prg_watermark',
+        'rpt_run'
+] as Set
+ext.readableInOps = [
+        // AGT orchestration ledger. Family-agnostic by design: one context, every family's launches.
+        'file_arrival', 'launch_intent', 'stage_outcome', 'duplicate_delivery'
+] as Set
+
+tasks.register('verifyFamilyTableBoundary') {
+    group = 'verification'
+    doLast {
+        def offenders = []
+        def counts = [:]
+        [collections: readableInCollections, ops: readableInOps].each { lane, allowed ->
+            def refs = 0
+            def creates = 0
+            fileTree("src/main/resources/db/changelog/${lane}").matching { include '**/*.xml' }.each { f ->
+                def text = f.text
+                (text =~ /public\.([a-z_]+)/).each { full, table ->
+                    refs++
+                    if (!allowed.contains(table)) {
+                        offenders << "${lane}/${f.name}: reads public.${table}, which no ${lane} owner publishes"
+                    }
+                }
+                (text =~ /<createTable\s+tableName="([a-z_]+)"/).each { full, table ->
+                    creates++
+                    if (!ownedByRpt.contains(table)) {
+                        offenders << "${lane}/${f.name}: creates table ${table}, which rpt does not own"
+                    }
+                }
+            }
+            counts[lane] = "${refs} table references, ${creates} createTable"
+            if (refs == 0) {
+                throw new GradleException("verifyFamilyTableBoundary matched 0 table references under ${lane}: "
+                        + 'the scan is broken, not clean')
+            }
+        }
+        if (!offenders.isEmpty()) {
+            throw new GradleException("Cross-boundary changelog references:\n  " + offenders.join('\n  '))
+        }
+        logger.lifecycle("verifyFamilyTableBoundary: ${counts}, 0 offenders")
+    }
+}
+
+check.dependsOn 'verifyViewPredicates', 'verifyFamilyTableBoundary'

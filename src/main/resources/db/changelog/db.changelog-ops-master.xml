@@ -5,8 +5,23 @@
         xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
         http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
 
-    <include file="db/changelog/2026/07/001-rpt-ops-views.xml"/>
-    <include file="db/changelog/2026/07/002-ops-file-views.xml"/>
-    <include file="db/changelog/2026/07/003-ops-support-views.xml"/>
+    <!--
+      The ORCHESTRATION read model, over agt_ops and nothing else. It is family-agnostic on
+      purpose: AGT's bounded context is "launch every family's stages and record what happened",
+      so a view grouping by launch_intent.stage spans CRR, PRR and MRR without crossing a database
+      boundary. That is the one genuinely cross-family surface rpt owns, and it costs no join
+      across databases because AGT already holds the fact in one place.
+
+      [!CONVENTION-OVERRIDE] Canon is that a service owns its own database and no other
+      (https://microservices.io/patterns/data/database-per-service.html). rpt creates the rpt
+      schema inside agt_ops, which is AGT's database. These views are AGT's read model and their
+      correct home is AGT. They live here because rpt already carries the session-identity and
+      grants discipline they need; the migration to AGT is specified in the SCRUM-107 report and
+      is an AGT change, not an rpt one.
+    -->
+
+    <include file="db/changelog/ops/2026/07/001-rpt-ops-views.xml"/>
+    <include file="db/changelog/ops/2026/07/002-ops-file-views.xml"/>
+    <include file="db/changelog/ops/2026/07/003-ops-support-views.xml"/>
 
 </databaseChangeLog>

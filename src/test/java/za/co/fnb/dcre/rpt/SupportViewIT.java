@@ -58,7 +58,7 @@ class SupportViewIT {
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", RptJobTest.CRDB::getJdbcUrl);
+        registry.add("spring.datasource.url", RptJobTest::businessDbUrl);
         registry.add("spring.datasource.username", RptJobTest.CRDB::getUsername);
         registry.add("spring.datasource.password", RptJobTest.CRDB::getPassword);
         registry.add("dcre.rpt.ops-db-url", RptJobTest::opsDbUrl);
@@ -72,7 +72,7 @@ class SupportViewIT {
 
     private void seedBusiness() throws SQLException {
         try (Connection root = DriverManager.getConnection(
-                RptJobTest.CRDB.getJdbcUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword());
+                RptJobTest.businessDbUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword());
              Statement s = root.createStatement()) {
             s.execute("DELETE FROM public.prg_watermark; DELETE FROM public.rpt_run;"
                     + "DELETE FROM public.prg_report; DELETE FROM public.cir_response;"
@@ -209,7 +209,7 @@ class SupportViewIT {
                 ('%s','%s','CRR','dcre-crr-ic','SUCCEEDED',0,'2026-07-01T08:03:00Z'),
                 ('%s',NULL,'CTV','dcre-ctv-ix','SUCCEEDED',0,'2026-07-01T08:03:00Z'),
                 ('%s',NULL,'CRW','dcre-crw-is','SUCCEEDED',1,'2026-07-01T08:03:00Z'),
-                ('%s',NULL,'PRG','dcre-prg-iu','LAUNCHED',0,'2026-07-01T08:03:00Z'),
+                ('%s',NULL,'CRG','dcre-crg-iu','LAUNCHED',0,'2026-07-01T08:03:00Z'),
                 ('%s',NULL,'HCS','dcre-hcs-ine','LAUNCHED',3,'2026-07-01T08:03:00Z')"""
                     .formatted(IC, A1, IX, IS, IU, INE));
             s.execute("""
@@ -283,7 +283,7 @@ class SupportViewIT {
                     bySubject.put(rs.getString("subject"), rs.getString("wedge_class"));
                 }
             }
-            assertEquals("LAUNCHED_NO_OUTCOME", bySubject.get("dcre-prg-iu"));
+            assertEquals("LAUNCHED_NO_OUTCOME", bySubject.get("dcre-crg-iu"));
             assertEquals("ATTEMPT_NEAR_EXHAUSTION", bySubject.get("dcre-hcs-ine"));
             assertEquals("ARRIVAL_UNCLAIMED", bySubject.get("FNBCC01_UNCLAIMED.txt"));
             assertTrue(classes.containsAll(List.of(

@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import za.co.fnb.dcre.rpt.domain.Family;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -21,14 +22,15 @@ class RptSecurityIT {
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", RptJobTest.CRDB::getJdbcUrl);
+        registry.add("spring.datasource.url", RptJobTest::businessDbUrl);
         registry.add("spring.datasource.username", RptJobTest.CRDB::getUsername);
         registry.add("spring.datasource.password", RptJobTest.CRDB::getPassword);
         registry.add("dcre.rpt.ops-db-url", RptJobTest::opsDbUrl);
     }
 
+    /** Defaults to the collections family's own database, which is where the business views live. */
     static Connection forRole(final String role) throws SQLException {
-        return forRole(RptJobTest.CRDB.getDatabaseName(), role);
+        return forRole(Family.COLLECTIONS.database(), role);
     }
 
     /** Role connection to any database in the shared container, pinned to present-time reads. */
@@ -61,7 +63,7 @@ class RptSecurityIT {
     @Test
     void clientRoleCannotReadOltpTables() throws Exception {
         try (Connection root = DriverManager.getConnection(
-                RptJobTest.CRDB.getJdbcUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword());
+                RptJobTest.businessDbUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword());
              Statement s = root.createStatement()) {
             s.execute("CREATE TABLE IF NOT EXISTS public.tx_header (id UUID PRIMARY KEY DEFAULT gen_random_uuid())");
         }

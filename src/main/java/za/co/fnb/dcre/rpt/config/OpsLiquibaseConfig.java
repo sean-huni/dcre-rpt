@@ -13,6 +13,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.datasource.SimpleDriverDataSource;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
+import za.co.fnb.dcre.rpt.domain.Family;
 
 import javax.sql.DataSource;
 
@@ -61,7 +62,12 @@ public class OpsLiquibaseConfig {
      * SpringLiquibase bean.
      */
     @Bean
-    public SpringLiquibase liquibase(final DataSource dataSource, final LiquibaseProperties properties) {
+    public SpringLiquibase liquibase(final DataSource dataSource, final LiquibaseProperties properties,
+                                     @Value("${dcre.rpt.family}") final String family) {
+        // Ordering is the whole point: the check runs inside this factory method, so it precedes
+        // SpringLiquibase.afterPropertiesSet() by construction rather than by bean-order luck.
+        // A mismatched process therefore creates nothing before it dies.
+        FamilyGuard.assertDatabaseMatches(dataSource, Family.fromToken(family));
         SpringLiquibase liquibase = new SpringLiquibase();
         liquibase.setDataSource(dataSource);
         liquibase.setChangeLog(properties.getChangeLog());

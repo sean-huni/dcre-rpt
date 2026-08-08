@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- Spring Batch 6 metadata under the RPT_BATCH_ prefix. Liquibase owns this DDL
+         (spring.batch.jdbc.initialize-schema stays never) and EXIT_MESSAGE is widened to TEXT for
+         CockroachDB.
+
+         The A-81 validCheckSum ANY escape hatch is GONE. It existed only so an already-migrated
+         database would accept the checksum change that adding IF NOT EXISTS caused; version 1 has
+         no already-migrated database, and a changeset that accepts ANY checksum accepts a silent
+         edit as readily as a deliberate one.
+
+         The IF NOT EXISTS clauses inside the .sql file STAY, and they are not the defensive
+         retrofit the version-1 directive removes. A-81 is a resumability control that bites on a
+         FRESH database too: a pod SIGKILLed mid-file leaves the tables created and the sequences,
+         which come last, missing, with no changelog row written, so the restart re-enters this
+         changeset against a half-built schema. Removing them re-opens A-81 on first run. -->
+    <changeSet id="002-batch-metadata-rpt" author="dcre">
+        <!-- LIQUIBASE-SQL-EXCEPTION: Spring Batch ships its schema as vendor SQL; there is no
+             typed Liquibase tag for "apply the framework's own DDL script", and hand-porting 6
+             tables and 3 sequences to typed tags would fork them from the framework's shape. -->
+        <sqlFile path="db/changelog/collections/2026/07/batch-metadata-rpt.sql" splitStatements="true"/>
+    </changeSet>
+
+</databaseChangeLog>

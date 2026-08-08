@@ -24,7 +24,7 @@ public abstract class OltpPreseededTestBase {
             RptJobTest.CRDB.start();
         }
         var ds = new DriverManagerDataSource(
-                RptJobTest.CRDB.getJdbcUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword());
+                RptJobTest.businessDbUrl(), RptJobTest.CRDB.getUsername(), RptJobTest.CRDB.getPassword());
         FixtureSeeder.createOltpTables(new JdbcTemplate(ds));
     }
 }

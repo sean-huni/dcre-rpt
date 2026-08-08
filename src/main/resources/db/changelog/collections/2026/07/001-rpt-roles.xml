@@ -1,16 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <databaseChangeLog
-        logicalFilePath="db/changelog/2026/07/001-rpt-roles.xml"
         xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
         http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
 
     <!-- LIQUIBASE-SQL-EXCEPTION: CREATE SCHEMA / CREATE ROLE / GRANT / ALTER ROLE have no
-         Liquibase typed tags; statements are IF NOT EXISTS / idempotent (R-04 grants ownership). -->
+         Liquibase typed tags (R-04 grants ownership).
+
+         CREATE SCHEMA carries no IF NOT EXISTS: the schema is per-DATABASE, this changelog is the
+         only thing that creates it in dcre_col, and on version 1 it cannot already be there.
+
+         CREATE ROLE keeps IF NOT EXISTS, and that is not a defensive retrofit. CockroachDB roles
+         are CLUSTER-scoped, not database-scoped, so rpt_internal is created by this run against
+         dcre_col AND by the ops changelog against agt_ops in the same cluster. Whichever runs
+         second meets a role that legitimately exists. -->
     <changeSet id="001-rpt-schema-roles" author="dcre">
         <sql>
-            CREATE SCHEMA IF NOT EXISTS rpt;
+            CREATE SCHEMA rpt;
             CREATE ROLE IF NOT EXISTS fnbcc01 LOGIN;
             CREATE ROLE IF NOT EXISTS fnbcc02 LOGIN;
             CREATE ROLE IF NOT EXISTS fnbrf01 LOGIN;

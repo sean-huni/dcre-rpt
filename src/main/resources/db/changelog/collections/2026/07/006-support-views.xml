@@ -5,20 +5,22 @@
         xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
         http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
 
-    <!-- SCRUM-58 Task 17: prod-support views (spec 11.3 Tier-2), business DB (dcre_collections).
-         EXTENDS the Task-12 view stack (005-file-trace-views.xml): same rpt schema, same
-         session-identity discipline, same verifyViewPredicates gate (every createView body carries
-         current_user). No new pre-creates: cir_response is MARK_RAN pre-created by 005 (runs first),
-         prg_watermark/crw_emission[_group|_member]/*_resp/validation_log pre-date this program and
-         are assumed present as on the fleet (the 005 comment's owner-base-table assumption).
+    <!-- Prod-support views (R-44 Tier-2), collections read model over dcre_col. EXTENDS the
+         005 view stack: same rpt schema, same session-identity discipline, same
+         verifyViewPredicates gate (every createView body carries current_user).
 
-         Evidence, never a verdict (spec 11.1): NO safe-to-replay/replay-verdict view exists here.
-         Every column reports what the database records; the operator decides.
+         Owned by other collections services, read here, created by none of it: cir_response by
+         CIR, crw_emission[_group|_member] by CRW, {isr,sbsr,pbsr}_resp by CIX/CSX/CPX,
+         validation_log by CTV, prg_watermark and prg_report by CRG (which kept its prg_* table
+         names when the SERVICE was renamed from PRG to CRG, so the table references below are
+         correct and must not be swept by a rename).
+
+         Evidence, never a verdict: NO safe-to-replay view exists here. Every column reports what
+         the database records; the operator decides.
 
          ::STRING casts on every free-text UNION-ALL column dodge the CRDB UNION-ALL
-         width-narrowing bug Task 12 found. Join columns resolved against the owner changelogs
-         (prg 001-prg.xml prg_watermark, crw 003 split crw_emission.group_id, cir 003-cir-response,
-         {ixr,sxr,pxr} *_resp.emission_id) at authoring time. -->
+         width-narrowing bug. Join columns were resolved against the owner changelogs at authoring
+         time. -->
 
     <!-- 1. v_arrival_status (spec 11.3 #6) - CLIENT-SCOPED-SAFE. Session-identity predicate (the
          v_tx family's), NO filenames, NO job names: one row per inbound business arrival with tx

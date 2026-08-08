@@ -12,13 +12,21 @@ spring:
       table-prefix: RPT_BATCH_
       initialize-schema: never
   liquibase:
-    change-log: classpath:db/changelog/db.changelog-master.xml
-    # Shared DB, per-service migration history
+    # The family selects its own read model. There is no family-agnostic business changelog and
+    # there must not be one: a view that could run against any family's database is a view whose
+    # numbers nobody can attribute.
+    change-log: classpath:db/changelog/db.changelog-${dcre.rpt.family}-master.xml
+    # Per-service migration history, in every database rpt migrates.
     database-change-log-table: rpt_databasechangelog
     database-change-log-lock-table: rpt_databasechangeloglock
 
 dcre:
   exchange-root: ${DCRE_EXCHANGE_ROOT:../../../../../../infra/dcre-infra/exchange}
   rpt:
-    # agt_ops ops-views changelog target (secondary Liquibase, Task 6)
+    # Which family's read model this run owns. One run per family, each against that family's own
+    # database; FamilyGuard refuses to start if the two disagree.
+    family: ${DCRE_RPT_FAMILY:collections}
+    # agt_ops ops-views changelog target (secondary Liquibase). Family-agnostic by design: AGT's
+    # ledger records every family's launches and is one bounded context, so it is migrated once
+    # per run rather than per family.
     ops-db-url: ${DCRE_RPT_OPS_DB_URL:jdbc:postgresql://localhost:26257/agt_ops?sslmode=disable}
