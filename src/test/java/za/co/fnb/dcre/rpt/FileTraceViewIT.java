@@ -97,7 +97,7 @@ class FileTraceViewIT {
                 VALUES ('%s','FNBCC01','MSG1','onhost-req','ACK','FNBCC01_MSG1_onhost-req_RESP.txt',
                         NULL,4,4,'2026-07-01T08:20:00Z','2026-07-01T08:15:00Z')""".formatted(A1));
             s.execute("""
-                INSERT INTO public.prg_report (client, report_type, trigger_kind, window_key, parent_source_msg_id,
+                INSERT INTO public.prg_report (client, type, trigger_kind, window_key, parent_source_msg_id,
                                                file_name, job_name, created_at)
                 VALUES ('FNBCC01','PSR','SCHEDULED','W1','MSGP1','FNBCC01_PSR_20260701.txt','local-prg-501',
                         '2026-07-01T16:00:00Z')""");
@@ -344,7 +344,7 @@ class FileTraceViewIT {
                 ('aaaaaaaa-0000-0000-0000-0000000000fb','%s','FNBCC01','MSGFAN','2026-07-02')"""
                     .formatted(af1, af2));
             s.execute("""
-                INSERT INTO public.prg_report (client, report_type, trigger_kind, window_key, parent_source_msg_id,
+                INSERT INTO public.prg_report (client, type, trigger_kind, window_key, parent_source_msg_id,
                                                file_name, job_name, created_at)
                 VALUES ('FNBCC01','PSR','SCHEDULED','WFAN','MSGFAN','FNBCC01_PSR_FANOUT.txt','local-prg-777',
                         '2026-07-02T16:00:00Z')""");

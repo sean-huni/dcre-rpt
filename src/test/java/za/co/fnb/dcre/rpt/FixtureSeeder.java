@@ -92,13 +92,19 @@ public final class FixtureSeeder {
               created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
               UNIQUE (emission_id, sequence))""");
         // prg_report base (prg 003-reporting) WITHOUT job_name: the file-trace changelog's
-        // MARK_RAN addColumn pre-create (byte-matching prg 004) adds job_name at migration time,
+        // MARK_RAN addColumn pre-create (matching prg 004) adds job_name at migration time,
         // exercising the bootstrap-order guard exactly as on a rpt-runs-first cluster.
         jdbc.execute("""
             CREATE TABLE IF NOT EXISTS public.prg_report (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
               client VARCHAR(16) NOT NULL,
-              report_type VARCHAR(12) NOT NULL DEFAULT 'PSR',
+              -- `type`, not `report_type`: a column never repeats its own table name, which is
+              -- PRG's own written decision. This block is a HAND-MAINTAINED MIRROR of a schema
+              -- no changelog in this estate mints any more, and it kept the stale spelling in
+              -- silence after the owners renamed it on 2026-09-11. Nothing here could go red:
+              -- the support views read file_name, client, job_name, created_at, trigger_kind,
+              -- parent_source_msg_id and id, and never this column.
+              type VARCHAR(12) NOT NULL DEFAULT 'PSR',
               trigger_kind VARCHAR(16) NOT NULL,
               window_key VARCHAR(64) NOT NULL DEFAULT 'W',
               parent_source_msg_id VARCHAR(35),
