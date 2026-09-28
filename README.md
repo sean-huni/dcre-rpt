@@ -1,16 +1,22 @@
 # dcre-rpt
 
+> Part of the DCRE fleet. For the fleet map, the rulings and the diagrams that specify every stage, start at the [DCRE design register](https://github.com/sean-huni/dcre-design-register); the complete list of live repositories is its [Repositories](https://github.com/sean-huni/dcre-design-register#repositories) table.
+
 Reporting schema owner for DCRE Collections: Liquibase-managed, session-identity-scoped SQL views over the shared CockroachDB.
 
 ## What it does
 
-Owns the `rpt` reporting surface of DCRE Collections (SCRUM-51). It is a one-shot Spring Boot 4.1 / Spring Batch 6 job whose real work happens in its two Liquibase runs: the primary changelog creates the `rpt` schema, the reporting roles and ten client-scoped views inside `dcre_col`; a secondary Liquibase run creates two internal-only ops views (stage health, SLA) inside `agt_ops`. The Batch step itself is a no-op tasklet: schema ownership lives in the changelogs, and the JVM exit code carries the job verdict (`ExitCodeMain` from platform-batch).
+Owns the `rpt` reporting surface of DCRE Collections (SCRUM-51). It is a one-shot Spring Boot 4.1 / Spring Batch 6 job whose real work happens in its two Liquibase runs: the primary changelog creates the `rpt` schema, the reporting roles, 18 views and the `rpt_run` table inside `dcre_col`; a secondary Liquibase run creates 7 internal-only ops views inside `agt_ops`. The Batch step (`schemaOwnerStep`) is a no-op tasklet: schema ownership lives in the changelogs, and the JVM exit code carries the job verdict (`ExitCodeMain` from platform-batch).
 
-Views owned by this module:
+Trigger: run by hand (or by a deploy step) whenever its changelogs change. AGT does not launch it: `RPT` is not a constant of AGT's `Stage` enum, whose javadoc names RPT as a cross-family service outside the stage roster (AGT `origin/dev`, checked 2026-09-28).
 
-- Core (`dcre_col`, schema `rpt`): `v_tx` (per-transaction status spine), `v_tx_daily`, `v_fails`, `v_reason_daily`, `v_debtor_daily`
-- Extended: `v_funnel_daily`, `v_latency`, `v_recon_daily` (recon R-24), `v_cure`, `v_amount_buckets`
-- Ops (`agt_ops`, schema `rpt`, internal-only): `v_ops_stage_health`, `v_ops_sla`
+Views owned by this module, all in schema `rpt`:
+
+- Client-scoped, `dcre_col` (12). Core: `v_tx` (per-transaction status spine), `v_tx_daily`, `v_fails`, `v_reason_daily`, `v_debtor_daily`. Extended: `v_funnel_daily`, `v_latency`, `v_recon_daily` (recon R-24), `v_cure`, `v_amount_buckets`. Support: `v_arrival_status`, `v_client_day`.
+- Internal-only, `dcre_col` (6): `v_file_index`, `v_flow_trace`, `v_correlation_index`, `v_emission_visibility`, `v_psr_watermark_lag`, `v_stuck`.
+- Internal-only ops, `agt_ops` (7): `v_ops_stage_health`, `v_ops_sla`, `v_ops_file_index`, `v_ops_flow`, `v_ops_attempts`, `v_ops_stuck`, `v_ops_client_day`.
+
+Counted from the `<createView>` elements at HEAD; `007-fintegrate-status-classification.xml` re-creates the core and extended views rather than adding new ones.
 
 ### Fintegrate status classification
 
@@ -65,16 +71,36 @@ Bottom line: as long as external client orgs self-serve their own data, `rpt` is
 
 ## Architecture and principles
 
+### Databases today
+
+- **Primary** `DCRE_DB_URL` / `DCRE_DB_USER` / `DCRE_DB_PASSWORD`, committed default `dcre_col` on `localhost:26257`: the `rpt` schema, roles, client and internal views, `rpt_run`, the `RPT_BATCH_*` tables and the `rpt_databasechangelog` history.
+- **Ops** `DCRE_RPT_OPS_DB_URL`, committed default `agt_ops` on `localhost:26257`, connected with the primary's user and password: the ops views and a second `rpt_databasechangelog` history.
+
+### What it writes and reads
+
+| Object | Database | Access |
+|---|---|---|
+| schema `rpt`, roles `fnbcc01` `fnbcc02` `fnbrf01` `rpt_internal`, grants | `dcre_col` | created by `001-rpt-roles.xml` |
+| 18 `rpt.v_*` views | `dcre_col` | created; they read `tx_header`, `tx_entry`, `validation_log`, `pbsr_resp`, `sbsr_resp`, `isr_resp`, `cir_response`, the `crw_emission*` tables, `prg_report` / `prg_watermark` (the collections report generator's tables, written by `crg`) and `rpt_run` |
+| `rpt_run` (`job_name` unique) | `dcre_col` | one row per completed run, `INSERT ... ON CONFLICT (job_name) DO NOTHING`, written before the outcome file |
+| `RPT_BATCH_*` | `dcre_col` | created by `002-batch-metadata.xml`; see the note below |
+| 7 `rpt.v_ops_*` views | `agt_ops` | created; they read `launch_intent`, `stage_outcome`, `file_arrival`, `duplicate_delivery` |
+| `<exchange-root>/outcomes/<JOB_NAME>` | filesystem | `BUSINESS_ACCEPTED` on `COMPLETED` |
+
+Batch metadata note: `RptApplication` imports only `JdbcConfig`, not platform-batch's `BatchJdbcConfig`, and its `application.yml` sets the `spring.batch.jdbc.*` keys that Boot 4.1 no longer binds (per platform-batch `BatchProperties`). The job therefore runs on Spring Batch 6's default in-memory job repository and the `RPT_BATCH_*` tables are created but not written. Every other fleet service references `BatchJdbcConfig` or `HeartbeatDatasourceConfig` (fleet `origin/dev`, checked 2026-09-28).
+
+### Invariants and principles
+
 - **SOLID, single responsibility**: the service does exactly one thing (own the reporting schema). `OpsLiquibaseConfig` owns migration wiring only, `RptJobConfig` owns the job and the startup sweeper only; each changeset carries one concern (roles, Batch metadata, one view family, grants).
-- **Session-identity row scoping**: every client-facing view carries `client = upper(current_user) OR current_user = 'rpt_internal'`; the ops views require `current_user IN ('rpt_internal', 'root')`. The `verifyViewPredicates` Gradle task (wired into `check`) fails the build if any `<createView>` lacks the predicate.
+- **Session-identity row scoping**: every client-facing view carries `client = upper(current_user) OR current_user = 'rpt_internal'`; the internal-only and ops views require `current_user IN ('rpt_internal', 'root')`. The `verifyViewPredicates` Gradle task (wired into `check`) fails the build if any `<createView>` lacks the predicate.
 - **Roles and grants wall**: client roles `fnbcc01`, `fnbcc02`, `fnbrf01` plus `rpt_internal` get USAGE + SELECT on schema `rpt` only; client roles cannot read the `public` OLTP tables. All four roles default `default_transaction_use_follower_reads = 'on'`, so reporting reads are served ~4.8 s stale by design and do not contend with the OLTP pipeline.
 - **12FactorApp Alignment - https://12factor.net/**: config strictly from the environment with committed working defaults (a clean clone runs with no `.env`), stateless one-shot process, CockroachDB as an attached backing resource, dev/prod parity (same CockroachDB engine in tests, compose and kind).
-- **Idempotent restart semantics**: per-service Liquibase history (`rpt_databasechangelog` + lock) in BOTH databases (the only DCRE module with history in both); `replaceIfExists` views and `IF NOT EXISTS` role/grant DDL converge on re-run; `StaleExecutionSweeper` abandons stale `RPT_BATCH_` executions at startup so a killed pod never blocks a same-identity relaunch.
+- **Idempotent restart semantics**: per-service Liquibase history (`rpt_databasechangelog` + lock) in BOTH databases; `replaceIfExists` views and `IF NOT EXISTS` role/grant DDL converge on re-run; `rpt_run` is keyed on `job_name`, so a same-Job relaunch is a no-op insert. A startup `StaleExecutionSweeper` runs over `RPT_BATCH_`, which the in-memory job repository never writes, so it currently has nothing to sweep. Platform-batch's `LiquibaseLockAutoConfiguration` releases a stale lock on the primary history table only; the `agt_ops` migration is a separate `SpringLiquibase` bean not named `liquibase`.
 - **Boot 4 Liquibase note**: `LiquibaseAutoConfiguration` backs off entirely once any user-defined `SpringLiquibase` bean exists, so `OpsLiquibaseConfig` declares the primary `dcre_col` migration explicitly (wired from `LiquibaseProperties`) alongside the secondary `agt_ops` migration, which uses a deliberately non-pooling `SimpleDriverDataSource`.
 
 ## Prerequisites
 
-- JDK 25 (Gradle toolchain; wrapper 9.5.1 committed)
+- Java 25 (`.sdkmanrc`: `java=25-tem`; `build.gradle` sets `sourceCompatibility` / `targetCompatibility` 25); Gradle wrapper 9.5.1 (committed)
 - Docker (Testcontainers and image builds)
 - Platform libs in mavenLocal: `za.co.fnb.dcre:platform-persistence:0.1.0` and `za.co.fnb.dcre:platform-batch:0.1.0`
 - A CockroachDB with the `dcre_col` and `agt_ops` databases (the dcre-infra compose and kind bootstraps create both)
@@ -84,20 +110,23 @@ Bottom line: as long as external client orgs self-serve their own data, `rpt` is
 Clean clone, no `.env`: the committed defaults target the dcre-infra compose CRDB on `localhost:26257`.
 
 ```zsh
-# platform libs once
-(cd ../platform-persistence && ./gradlew publishToMavenLocal)
-(cd ../platform-batch && ./gradlew publishToMavenLocal)
+# platform libs once (paths assume the fleet checkout be/java/spring/dcre/{shared,platform}/;
+# platform-batch needs platform-model and platform-files published first)
+(cd ../../platform/platform-persistence && ./gradlew publishToMavenLocal)
+(cd ../../platform/platform-batch && ./gradlew publishToMavenLocal)
 
 # backing DB (compose inner loop; init creates dcre_col + agt_ops)
-(cd ../../../../../infra/dcre-infra && docker compose up -d)
+(cd ../../../../../../infra/dcre-infra && docker compose up -d)
 
 # apply both changelogs, run the no-op job, exit with the Batch exit code
 ./gradlew bootRun
 ```
 
-Ordering matters: run rpt only after AGT and the stage services have applied their schemas at least once. CockroachDB validates view dependencies at CREATE time, so the `public.*` OLTP tables must pre-exist in both databases. A re-run of the job needs a fresh identifying parameter (Spring Batch job-instance identity), e.g. `./gradlew bootRun --args="window=$(date +%Y%m%dT%H%M%S)"`.
+Ordering matters: run rpt only after AGT and the stage services have applied their schemas at least once. CockroachDB validates view dependencies at CREATE time, so the `public.*` OLTP tables must pre-exist in both databases.
 
 ## Configuration
+
+Spring relaxed binding lets any property be overridden by its environment-variable form, so this table lists the variables the committed `application.yml` names, not a closed set.
 
 | Env var | Default | Purpose |
 |---|---|---|
@@ -105,10 +134,10 @@ Ordering matters: run rpt only after AGT and the stage services have applied the
 | `DCRE_DB_USER` | `root` | DB user (also used for the `agt_ops` migration connection) |
 | `DCRE_DB_PASSWORD` | (empty) | DB password |
 | `DCRE_RPT_OPS_DB_URL` | `jdbc:postgresql://localhost:26257/agt_ops?sslmode=disable` | Target of the secondary ops-views Liquibase run |
-| `DCRE_EXCHANGE_ROOT` | `../../../../../infra/dcre-infra/exchange` | Exchange root; on COMPLETED the job stages a `BUSINESS_ACCEPTED` outcome file under `outcomes/` |
-| `JOB_NAME` | `local-<executionId>` | Outcome-file identity when launched as a k8s Job |
+| `DCRE_EXCHANGE_ROOT` | `../../../../../infra/dcre-infra/exchange` | Exchange root; on COMPLETED the job stages a `BUSINESS_ACCEPTED` outcome file under `outcomes/`. Relative to the working directory: from the fleet checkout `be/java/spring/dcre/shared/rpt` five `../` resolve to `be/infra/dcre-infra/exchange`, which does not exist (the stage services use six), so set it explicitly for a local run |
+| `JOB_NAME` | unset: `local-rpt-<executionId>` | Outcome-file and `rpt_run` identity when launched as a k8s Job |
 
-Fixed by the changelogs (not env-tunable): Batch metadata under the `RPT_BATCH_` prefix (`spring.batch.jdbc.initialize-schema: never`, Liquibase owns the DDL, `EXIT_MESSAGE` widened to TEXT for CockroachDB) and Liquibase history in `rpt_databasechangelog` / `rpt_databasechangeloglock` in both databases.
+Fixed by the changelogs and `application.yml` (not env-tunable): the `RPT_BATCH_*` DDL (Liquibase-owned, `EXIT_MESSAGE` widened to TEXT for CockroachDB) and Liquibase history in `rpt_databasechangelog` / `rpt_databasechangeloglock` in both databases.
 
 ## Testing
 
@@ -118,22 +147,22 @@ Fixed by the changelogs (not env-tunable): Batch metadata under the `RPT_BATCH_`
 ./gradlew verifyViewPredicates   # session-identity gate alone (no Docker)
 ```
 
-Tests run against Testcontainers CockroachDB `cockroachdb/cockroach:v26.2.3`. The shared container pre-creates `agt_ops` and the OLTP fixture tables before any Spring context boots, because the view changesets validate their `public.*` dependencies at CREATE time. Suite: `RptJobTest` (job COMPLETED, 38 changesets in the rpt history), `RptCoreViewsIT` / `RptExtendedViewsIT` (golden results), `RptBatchCorrelationIT` (batch-scoped binding, fail-closed negatives), `RptEmissionCurrencyIT` (current-emission pick, re-emission no-double-count), `RptStatusClassificationMigrationIT` (legacy/fresh/half-applied/mid-changeset-kill convergence + rollback), `RptIsolationIT` (enumerates every `rpt` view and asserts zero foreign-client rows per client role), `RptSecurityIT` (grants wall, follower-read role defaults), `RptOpsViewsIT` (`agt_ops` views internal-only), `SupportViewIT` / `FileTraceViewIT` / `ViewPredicateConformanceIT` (support views, file trace, session-identity conformance).
+Tests run against Testcontainers CockroachDB `cockroachdb/cockroach:v26.2.3`. The shared container pre-creates `agt_ops` and the OLTP fixture tables before any Spring context boots, because the view changesets validate their `public.*` dependencies at CREATE time. Suite: 13 test classes, 52 `@Test` methods (counted from `src/test` at HEAD). `RptJobTest` (job COMPLETED, 38 changesets in the rpt history), `RptRunCaptureIT` (one `rpt_run` row per seam name, same-name re-run is a no-op), `RptCoreViewsIT` / `RptExtendedViewsIT` (golden results), `RptBatchCorrelationIT` (batch-scoped binding, fail-closed negatives), `RptEmissionCurrencyIT` (current-emission pick, re-emission no-double-count), `RptStatusClassificationMigrationIT` (legacy/fresh/half-applied/mid-changeset-kill convergence + rollback), `RptIsolationIT` (enumerates every `rpt` view and asserts zero foreign-client rows per client role), `RptSecurityIT` (grants wall, follower-read role defaults), `RptOpsViewsIT` (`agt_ops` views internal-only), `SupportViewIT` / `FileTraceViewIT` / `ViewPredicateConformanceIT` (support views, file trace, session-identity conformance).
 
 ## Local cluster deployment
 
-rpt is not an AGT-launched pipeline stage (dcre-infra `switch-version.sh` stage list excludes it). It is a schema owner: run it one-shot whenever its changelogs change, after the OLTP schema exists.
+rpt is not an AGT-launched pipeline stage (not in AGT's `Stage` enum; dcre-infra `switch-version.sh`'s stage list excludes it, dcre-infra `origin/dev` checked 2026-09-28). It is a schema owner: run it one-shot whenever its changelogs change, after the OLTP schema exists.
 
 Against the kind cluster `dcre-dev`, port-forward CRDB and override the two URLs (`scripts/crdb-forward.sh` maps SQL to host port 26258):
 
 ```zsh
-(cd ../../../../../infra/dcre-infra && scripts/crdb-forward.sh)
+(cd ../../../../../../infra/dcre-infra && scripts/crdb-forward.sh)
 DCRE_DB_URL='jdbc:postgresql://localhost:26258/dcre_col?sslmode=disable' \
 DCRE_RPT_OPS_DB_URL='jdbc:postgresql://localhost:26258/agt_ops?sslmode=disable' \
 ./gradlew bootRun
 ```
 
-Container image (fleet parity; no k8s manifest for rpt is committed in dcre-infra):
+Container image (fleet parity; dcre-infra `origin/dev` holds no k8s manifest for rpt, checked 2026-09-28):
 
 ```zsh
 ./gradlew bootJar
@@ -141,7 +170,7 @@ docker build -t dcre-rpt:2.0 .
 kind load docker-image --name dcre-dev dcre-rpt:2.0
 ```
 
-dcre-infra's `env-reset.sh` pre-seeds the rpt Liquibase history+lock tables in both databases (first-run bootstrap-race guard) and refuses to scale AGT up until they exist.
+dcre-infra's `env-reset.sh` pre-seeds the rpt Liquibase history+lock tables in both databases (first-run bootstrap-race guard) and refuses to scale AGT up until the two in `agt_ops` exist (dcre-infra `origin/dev`, checked 2026-09-28).
 
 ## Related repositories
 
